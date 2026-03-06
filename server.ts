@@ -173,6 +173,12 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 const server = Bun.serve({
   port: PORT,
   fetch(req, server) {
+    const url = new URL(req.url);
+    if (url.pathname === "/health") {
+      return new Response(JSON.stringify({ status: "ok" }), {
+        headers: { "Content-Type": "application/json" },
+      });
+    }
     const upgraded = server.upgrade(req, { data: {} as ClientData });
     if (!upgraded) {
       return new Response("Party-Sockets relay server", { status: 200 });
