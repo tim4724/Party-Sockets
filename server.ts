@@ -215,6 +215,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <title>Party-Sockets</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
@@ -261,6 +262,9 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: { "Content-Type": "application/json" },
       });
+    }
+    if (url.pathname === "/favicon.svg") {
+      return new Response(Bun.file(import.meta.dir + "/favicon.svg"));
     }
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
