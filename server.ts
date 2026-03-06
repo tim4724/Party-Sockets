@@ -276,6 +276,7 @@ const server = Bun.serve({
     }
   },
   websocket: {
+    idleTimeout: 10,
     open(ws) {
       // Nothing to do on open
     },
