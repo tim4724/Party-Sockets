@@ -18,10 +18,12 @@ type ServerMessage =
 interface ClientData {
   clientId?: string;
   room?: string;
+  origin?: string;
 }
 
 interface Room {
   maxClients: number;
+  origin: string;
   clients: Map<string, ServerWebSocket<ClientData>>;
 }
 
@@ -91,7 +93,8 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   }
 
   const code = generateRoomCode();
-  const room: Room = { maxClients: msg.maxClients, clients: new Map() };
+  const origin = ws.data.origin || "unknown";
+  const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);
   rooms.set(code, room);
 
@@ -166,6 +169,86 @@ function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: u
   }
 }
 
+// --- Status page ---
+
+interface OriginStats {
+  rooms: number;
+  clients: number;
+}
+
+function getOriginStats(): { roomCount: number; clientCount: number; origins: Map<string, OriginStats> } {
+  let roomCount = 0;
+  let clientCount = 0;
+  const origins = new Map<string, OriginStats>();
+  for (const room of rooms.values()) {
+    roomCount++;
+    const clients = room.clients.size;
+    clientCount += clients;
+    const key = room.origin;
+    const entry = origins.get(key);
+    if (entry) {
+      entry.rooms++;
+      entry.clients += clients;
+    } else {
+      origins.set(key, { rooms: 1, clients });
+    }
+  }
+  return { roomCount, clientCount, origins };
+}
+
+function statusPage(roomCount: number, clientCount: number, origins: Map<string, OriginStats>): string {
+  let originsHtml = "";
+  if (origins.size > 0) {
+    const rows = Array.from(origins.entries())
+      .sort((a, b) => b[1].clients - a[1].clients)
+      .map(([origin, s]) => `<tr><td>${origin}</td><td>${s.rooms}</td><td>${s.clients}</td></tr>`)
+      .join("");
+    originsHtml = `
+  <table>
+    <thead><tr><th>Origin</th><th>Rooms</th><th>Clients</th></tr></thead>
+    <tbody>${rows}</tbody>
+  </table>`;
+  }
+
+  return `<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Party-Sockets</title>
+<style>
+  * { margin: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 2.5rem; max-width: 360px; width: 100%; }
+  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
+  .status { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; color: #4ade80; }
+  .dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 6px #4ade80; }
+  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
+  .stat { background: #222; border-radius: 8px; padding: 1rem; text-align: center; }
+  .stat-value { font-size: 1.75rem; font-weight: 700; color: #fff; }
+  .stat-label { font-size: 0.75rem; color: #888; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.85rem; }
+  th { color: #888; font-weight: 500; text-align: left; padding: 0.4rem 0; border-bottom: 1px solid #2a2a2a; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  td { padding: 0.4rem 0; border-bottom: 1px solid #1f1f1f; }
+  td:nth-child(2), td:nth-child(3), th:nth-child(2), th:nth-child(3) { text-align: right; }
+  a { color: #888; font-size: 0.8rem; text-decoration: none; }
+  a:hover { color: #bbb; }
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>Party-Sockets</h1>
+  <div class="status"><span class="dot"></span> Online</div>
+  <div class="stats">
+    <div class="stat"><div class="stat-value">${roomCount}</div><div class="stat-label">Rooms</div></div>
+    <div class="stat"><div class="stat-value">${clientCount}</div><div class="stat-label">Clients</div></div>
+  </div>${originsHtml}
+  <a href="https://github.com/tim4724/Party-Sockets">GitHub</a>
+</div>
+</body>
+</html>`;
+}
+
 // --- Server ---
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
@@ -179,9 +262,13 @@ const server = Bun.serve({
         headers: { "Content-Type": "application/json" },
       });
     }
-    const upgraded = server.upgrade(req, { data: {} as ClientData });
+    const origin = req.headers.get("origin") || undefined;
+    const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
-      return new Response("Party-Sockets relay server", { status: 200 });
+      const { roomCount, clientCount, origins } = getOriginStats();
+      return new Response(statusPage(roomCount, clientCount, origins), {
+        headers: { "Content-Type": "text/html" },
+      });
     }
   },
   websocket: {
