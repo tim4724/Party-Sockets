@@ -14,7 +14,7 @@ jobs:
 
   deploy:
     needs: build
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, k8s]
     steps:
       - name: Setup kubectl
         uses: azure/setup-kubectl@v4
