@@ -27,7 +27,8 @@ jobs:
         run: |
           echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
-          IMAGE="ghcr.io/${{ github.repository }}:${{ needs.build.outputs.image_tag }}"
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_LOWER}:${{ needs.build.outputs.image_tag }}"
           echo "Deploying ${IMAGE}"
           kubectl set image deployment/party-sockets party-sockets="${IMAGE}" -n default
           kubectl rollout status deployment/party-sockets -n default --timeout=120s
