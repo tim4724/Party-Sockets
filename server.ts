@@ -27,6 +27,11 @@ interface Room {
   clients: Map<string, ServerWebSocket<ClientData>>;
 }
 
+// --- Constants ---
+
+const VERSION = "1.1.1";
+const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1a1a"/><line x1="32" y1="18" x2="18" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="32" y1="18" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="18" y1="42" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><circle cx="32" cy="18" r="8" fill="#f472b6"/><circle cx="18" cy="42" r="8" fill="#60a5fa"/><circle cx="46" cy="42" r="8" fill="#4ade80"/></svg>`;
+
 // --- State ---
 
 const rooms = new Map<string, Room>();
@@ -215,7 +220,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}">
 <title>Party-Sockets</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
@@ -244,7 +249,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <div class="stat"><div class="stat-value">${roomCount}</div><div class="stat-label">Rooms</div></div>
     <div class="stat"><div class="stat-value">${clientCount}</div><div class="stat-label">Clients</div></div>
   </div>${originsHtml}
-  <a href="https://github.com/tim4724/Party-Sockets">GitHub</a>
+  <a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span style="float:right;color:#555;font-size:0.8rem">v${VERSION}</span>
 </div>
 </body>
 </html>`;
@@ -262,9 +267,6 @@ const server = Bun.serve({
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: { "Content-Type": "application/json" },
       });
-    }
-    if (url.pathname === "/favicon.svg") {
-      return new Response(Bun.file(import.meta.dir + "/favicon.svg"));
     }
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
