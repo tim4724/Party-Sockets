@@ -296,7 +296,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
         const name = origin.replace(/^https?:\/\//, "");
         const liveLabel = live
           ? `<span class="badge">${live.rooms} room${live.rooms !== 1 ? "s" : ""}, ${live.clients} client${live.clients !== 1 ? "s" : ""}</span>`
-          : '<span class="badge off">offline</span>';
+          : '';
         const h30 = show30 ? `<th>${label30}</th>` : "";
         const h365 = show365 ? `<th>${label365}</th>` : "";
         const c30 = (s: DayStats) => show30 ? `<td>${fmt(s.connections)}</td>` : "";
@@ -535,6 +535,10 @@ function runTest() {
 
   ws.onerror = () => { btn.textContent = 'Connection failed'; btn.disabled = false; };
 }
+let hasTestedOnce = false;
+const origRunTest = runTest;
+runTest = function() { hasTestedOnce = true; origRunTest(); };
+setInterval(() => { if (!hasTestedOnce) location.reload(); }, 5000);
 </script>
 </body>
 </html>`;
