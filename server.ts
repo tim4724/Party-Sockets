@@ -308,7 +308,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
         const r30 = (s: DayStats) => show30 ? `<td>${fmt(s.rooms)}</td>` : "";
         const r365 = (s: DayStats) => show365 ? `<td>${fmt(s.rooms)}</td>` : "";
         return `<div class="origin">
-  <div class="oh"><span class="on">${name}</span>${liveLabel}</div>
+  <div class="oh"><span class="on"><img class="ofav" src="${origin}/favicon.ico" data-fb="/favicon.svg,/favicon.png,/apple-touch-icon.png" onerror="var f=this.dataset.fb.split(',');if(f.length){this.dataset.fb=f.slice(1).join(',');this.src='${origin}'+f[0]}else this.style.display='none'">${name}</span>${liveLabel}</div>
   <table>
     <thead><tr><th></th><th>Today</th>${h30}${h365}</tr></thead>
     <tbody>
@@ -344,7 +344,8 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   .sl { font-size: 0.7rem; color: #888; margin-top: 0.15rem; text-transform: uppercase; letter-spacing: 0.05em; }
   .origin { background: #161616; border: 1px solid #222; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; }
   .oh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
-  .on { color: #fff; font-weight: 600; font-size: 0.85rem; }
+  .on { color: #fff; font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.4rem; }
+  .ofav { width: 14px; height: 14px; border-radius: 2px; }
   .badge { font-size: 0.7rem; color: #4ade80; }
   .badge.off { color: #555; }
   table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
@@ -559,6 +560,11 @@ const server = Bun.serve({
     if (url.pathname === "/health") {
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: { "Content-Type": "application/json" },
+      });
+    }
+    if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
+      return new Response(FAVICON_SVG, {
+        headers: { "Content-Type": "image/svg+xml" },
       });
     }
     const origin = req.headers.get("origin") || undefined;
