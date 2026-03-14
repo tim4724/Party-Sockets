@@ -279,7 +279,7 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function statusPage(roomCount: number, clientCount: number, origins: Map<string, OriginStats>): string {
+function statusPage(roomCount: number, clientCount: number, origins: Map<string, OriginStats>, ipFamily?: string): string {
   pruneStats();
 
   const uptimeMs = Date.now() - serverStartedAt;
@@ -380,7 +380,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <h1>Party-Sockets</h1>
     <div class="status"><span class="dot"></span> Online</div>
   </div>
-  <div class="uptime">Uptime ${uptime}</div>
+  <div class="uptime">Uptime ${uptime}${ipFamily ? ` · ${ipFamily}` : ''}</div>
   <div class="live">
     <div class="stat"><div class="sv">${roomCount}</div><div class="sl">Rooms</div></div>
     <div class="stat"><div class="sv">${clientCount}</div><div class="sl">Clients</div></div>
@@ -578,7 +578,9 @@ const server = Bun.serve({
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
       const { roomCount, clientCount, origins } = getOriginStats();
-      return new Response(statusPage(roomCount, clientCount, origins), {
+      const ip = server.requestIP(req);
+      const ipFamily = ip?.address?.startsWith("::ffff:") ? "IPv4" : ip?.family;
+      return new Response(statusPage(roomCount, clientCount, origins, ipFamily), {
         headers: { "Content-Type": "text/html" },
       });
     }

@@ -4,7 +4,7 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 ## How it works
 
-- A client **creates** a room (server assigns a 4-char code) with a max client limit
+- A client **creates** a room (server assigns a 4-char code, or uses a preferred code) with a max client limit
 - Other clients **join** by room code
 - Clients provide their own UUID — reconnecting with the same UUID replaces the old connection
 - Messages can be **broadcast** to all peers or **sent** to a specific client
@@ -39,7 +39,12 @@ const clientId = crypto.randomUUID(); // any unique string works
 
 ```js
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
+
+// Or request a specific room code (e.g. to restore a room after server restart)
+ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "A3KX" }));
 ```
+
+If the preferred `room` code is a valid 4-letter code and not already taken, it will be used. Otherwise the server generates a new one.
 
 ### Join a room
 
@@ -115,7 +120,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room |
+| `create` | `clientId`, `maxClients`, `room?` | Create a new room (optionally with a preferred code) |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 
