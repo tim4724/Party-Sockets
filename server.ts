@@ -307,8 +307,11 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
         const c365 = (s: DayStats) => show365 ? `<td>${fmt(s.connections)}</td>` : "";
         const r30 = (s: DayStats) => show30 ? `<td>${fmt(s.rooms)}</td>` : "";
         const r365 = (s: DayStats) => show365 ? `<td>${fmt(s.rooms)}</td>` : "";
+        const favicon = origin.startsWith("https://")
+          ? `<img class="ofav" src="${origin}/favicon.ico">`
+          : '';
         return `<div class="origin">
-  <div class="oh"><span class="on"><img class="ofav" src="${origin}/favicon.ico" data-fb="/favicon.svg,/favicon.png,/apple-touch-icon.png" onerror="var f=this.dataset.fb.split(',');if(f.length){this.dataset.fb=f.slice(1).join(',');this.src='${origin}'+f[0]}else this.style.display='none'">${name}</span>${liveLabel}</div>
+  <div class="oh"><span class="on">${favicon}${name}</span>${liveLabel}</div>
   <table>
     <thead><tr><th></th><th>Today</th>${h30}${h365}</tr></thead>
     <tbody>
@@ -381,7 +384,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <div class="stat"><div class="sv">${clientCount}</div><div class="sl">Clients</div></div>
   </div>${originsHtml}
   <div id="test-section">
-    <button id="test-btn" onclick="runTest()">Test Latency</button>
+    <button id="test-btn">Test Latency</button>
     <canvas id="test-chart"></canvas>
     <div id="test-stats"></div>
   </div>
@@ -540,10 +543,12 @@ function runTest() {
 
   ws.onerror = () => { btn.textContent = 'Connection failed'; btn.disabled = false; };
 }
-let hasTestedOnce = false;
-const origRunTest = runTest;
-runTest = function() { hasTestedOnce = true; origRunTest(); };
-setInterval(() => { if (!hasTestedOnce) location.reload(); }, 5000);
+document.getElementById('test-btn').addEventListener('click', function() { hasTestedOnce = true; runTest(); });
+document.querySelectorAll('.ofav').forEach(function(img) {
+  img.addEventListener('error', function() { this.style.display = 'none'; });
+});
+var hasTestedOnce = false;
+setInterval(function() { if (!hasTestedOnce) location.reload(); }, 5000);
 </script>
 </body>
 </html>`;
