@@ -44,14 +44,16 @@ interface DayStats {
   rooms: number;
 }
 
-// Key: "YYYY-MM-DD:origin"
-const stats = new Map<string, DayStats>();
+// origin -> date -> DayStats
+const stats = new Map<string, Map<string, DayStats>>();
 
 function incrementStat(origin: string, field: keyof DayStats) {
-  const key = `${new Date().toISOString().slice(0, 10)}:${origin}`;
-  const s = stats.get(key);
+  const date = new Date().toISOString().slice(0, 10);
+  let originMap = stats.get(origin);
+  if (!originMap) { originMap = new Map(); stats.set(origin, originMap); }
+  const s = originMap.get(date);
   if (s) s[field]++;
-  else stats.set(key, { connections: 0, rooms: 0, [field]: 1 });
+  else originMap.set(date, { connections: 0, rooms: 0, [field]: 1 });
 }
 
 function dateStr(d: Date): string {
@@ -62,23 +64,27 @@ function pruneStats() {
   const cutoff = new Date();
   cutoff.setDate(cutoff.getDate() - 366);
   const cutoffStr = dateStr(cutoff);
-  for (const key of stats.keys()) {
-    if (key.slice(0, 10) < cutoffStr) stats.delete(key);
+  for (const [origin, originMap] of stats) {
+    for (const date of originMap.keys()) {
+      if (date < cutoffStr) originMap.delete(date);
+    }
+    if (originMap.size === 0) stats.delete(origin);
   }
 }
 
-function aggregateStats(sinceDate: string, origin?: string): DayStats {
+function aggregateStats(sinceDate: string, origin: string): DayStats {
   const result: DayStats = { connections: 0, rooms: 0 };
-  for (const [key, s] of stats) {
-    if (key.slice(0, 10) < sinceDate) continue;
-    if (origin !== undefined && key.slice(11) !== origin) continue;
+  const originMap = stats.get(origin);
+  if (!originMap) return result;
+  for (const [date, s] of originMap) {
+    if (date < sinceDate) continue;
     result.connections += s.connections;
     result.rooms += s.rooms;
   }
   return result;
 }
 
-function getStatsPeriods(origin?: string) {
+function getStatsPeriods(origin: string) {
   const now = new Date();
   const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
   const d365 = new Date(now); d365.setDate(d365.getDate() - 365);
@@ -283,9 +289,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   const label365 = `${Math.min(Math.floor(uptimeDays), 365)}d`;
 
   // Collect all known origins (live + historical)
-  const uniqueOrigins = new Set<string>();
-  for (const key of stats.keys()) uniqueOrigins.add(key.slice(11));
-  const allOrigins = new Set([...origins.keys(), ...uniqueOrigins]);
+  const allOrigins = new Set([...origins.keys(), ...stats.keys()]);
 
   let originsHtml = "";
   if (allOrigins.size > 0) {
