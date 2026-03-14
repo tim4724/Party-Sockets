@@ -35,6 +35,71 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 // --- State ---
 
 const rooms = new Map<string, Room>();
+const serverStartedAt = Date.now();
+
+// --- Stats ---
+
+interface DayStats {
+  connections: number;
+  rooms: number;
+}
+
+// Key: "YYYY-MM-DD:origin"
+const stats = new Map<string, DayStats>();
+
+function incrementStat(origin: string, field: keyof DayStats) {
+  const key = `${new Date().toISOString().slice(0, 10)}:${origin}`;
+  const s = stats.get(key);
+  if (s) s[field]++;
+  else stats.set(key, { connections: 0, rooms: 0, [field]: 1 });
+}
+
+function dateStr(d: Date): string {
+  return d.toISOString().slice(0, 10);
+}
+
+function pruneStats() {
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 366);
+  const cutoffStr = dateStr(cutoff);
+  for (const key of stats.keys()) {
+    if (key.slice(0, 10) < cutoffStr) stats.delete(key);
+  }
+}
+
+function aggregateStats(sinceDate: string, origin?: string): DayStats {
+  const result: DayStats = { connections: 0, rooms: 0 };
+  for (const [key, s] of stats) {
+    if (key.slice(0, 10) < sinceDate) continue;
+    if (origin !== undefined && key.slice(11) !== origin) continue;
+    result.connections += s.connections;
+    result.rooms += s.rooms;
+  }
+  return result;
+}
+
+function getStatsPeriods(origin?: string) {
+  const now = new Date();
+  const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
+  const d365 = new Date(now); d365.setDate(d365.getDate() - 365);
+  return {
+    today: aggregateStats(dateStr(now), origin),
+    days30: aggregateStats(dateStr(d30), origin),
+    days365: aggregateStats(dateStr(d365), origin),
+  };
+}
+
+function formatUptime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const mins = Math.floor((s % 3600) / 60);
+  const parts: string[] = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  parts.push(`${mins}m`);
+  return parts.join(" ");
+}
 
 // --- Room code generation ---
 
@@ -106,6 +171,7 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   ws.data.clientId = msg.clientId;
   ws.data.room = code;
 
+  incrementStat(origin, "rooms");
   send(ws, { type: "created", room: code });
 }
 
@@ -201,18 +267,55 @@ function getOriginStats(): { roomCount: number; clientCount: number; origins: Ma
   return { roomCount, clientCount, origins };
 }
 
+function fmt(n: number): string {
+  return n.toLocaleString("en-US");
+}
+
 function statusPage(roomCount: number, clientCount: number, origins: Map<string, OriginStats>): string {
+  pruneStats();
+
+  const uptimeMs = Date.now() - serverStartedAt;
+  const uptime = formatUptime(uptimeMs);
+  const uptimeDays = uptimeMs / 86_400_000;
+  const show30 = uptimeDays > 1;
+  const show365 = uptimeDays > 30;
+  const label30 = `${Math.min(Math.floor(uptimeDays), 30)}d`;
+  const label365 = `${Math.min(Math.floor(uptimeDays), 365)}d`;
+
+  // Collect all known origins (live + historical)
+  const uniqueOrigins = new Set<string>();
+  for (const key of stats.keys()) uniqueOrigins.add(key.slice(11));
+  const allOrigins = new Set([...origins.keys(), ...uniqueOrigins]);
+
   let originsHtml = "";
-  if (origins.size > 0) {
-    const rows = Array.from(origins.entries())
-      .sort((a, b) => b[1].clients - a[1].clients)
-      .map(([origin, s]) => `<tr><td>${origin}</td><td>${s.rooms}</td><td>${s.clients}</td></tr>`)
-      .join("");
-    originsHtml = `
+  if (allOrigins.size > 0) {
+    const rows = Array.from(allOrigins)
+      .map((origin) => ({ origin, live: origins.get(origin), periods: getStatsPeriods(origin) }))
+      .sort((a, b) => (b.live?.clients ?? 0) - (a.live?.clients ?? 0))
+      .map(({ origin, live, periods: p }) => {
+        const name = origin.replace(/^https?:\/\//, "");
+        const liveLabel = live
+          ? `<span class="badge">${live.rooms} room${live.rooms !== 1 ? "s" : ""}, ${live.clients} client${live.clients !== 1 ? "s" : ""}</span>`
+          : '<span class="badge off">offline</span>';
+        const h30 = show30 ? `<th>${label30}</th>` : "";
+        const h365 = show365 ? `<th>${label365}</th>` : "";
+        const c30 = (s: DayStats) => show30 ? `<td>${fmt(s.connections)}</td>` : "";
+        const c365 = (s: DayStats) => show365 ? `<td>${fmt(s.connections)}</td>` : "";
+        const r30 = (s: DayStats) => show30 ? `<td>${fmt(s.rooms)}</td>` : "";
+        const r365 = (s: DayStats) => show365 ? `<td>${fmt(s.rooms)}</td>` : "";
+        return `<div class="origin">
+  <div class="oh"><span class="on">${name}</span>${liveLabel}</div>
   <table>
-    <thead><tr><th>Origin</th><th>Rooms</th><th>Clients</th></tr></thead>
-    <tbody>${rows}</tbody>
-  </table>`;
+    <thead><tr><th></th><th>Today</th>${h30}${h365}</tr></thead>
+    <tbody>
+      <tr><td>Connections</td><td>${fmt(p.today.connections)}</td>${c30(p.days30)}${c365(p.days365)}</tr>
+      <tr><td>Rooms</td><td>${fmt(p.today.rooms)}</td>${r30(p.days30)}${r365(p.days365)}</tr>
+    </tbody>
+  </table>
+</div>`;
+      })
+      .join("");
+    originsHtml = rows;
   }
 
   return `<!DOCTYPE html>
@@ -224,32 +327,46 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
 <title>Party-Sockets</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; }
-  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 2.5rem; max-width: 360px; width: 100%; }
-  h1 { font-size: 1.5rem; margin-bottom: 1.5rem; }
-  .status { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 1.5rem; color: #4ade80; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 1rem; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 2rem; max-width: 400px; width: 100%; }
+  h1 { font-size: 1.4rem; }
+  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
+  .status { display: flex; align-items: center; gap: 0.4rem; color: #4ade80; font-size: 0.8rem; }
   .dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 6px #4ade80; }
-  .stats { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1.5rem; }
-  .stat { background: #222; border-radius: 8px; padding: 1rem; text-align: center; }
-  .stat-value { font-size: 1.75rem; font-weight: 700; color: #fff; }
-  .stat-label { font-size: 0.75rem; color: #888; margin-top: 0.25rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; font-size: 0.85rem; }
-  th { color: #888; font-weight: 500; text-align: left; padding: 0.4rem 0; border-bottom: 1px solid #2a2a2a; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  td { padding: 0.4rem 0; border-bottom: 1px solid #1f1f1f; }
-  td:nth-child(2), td:nth-child(3), th:nth-child(2), th:nth-child(3) { text-align: right; }
-  a { color: #888; font-size: 0.8rem; text-decoration: none; }
+  .uptime { color: #555; font-size: 0.75rem; margin-bottom: 1.25rem; }
+  .live { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
+  .stat { background: #222; border-radius: 8px; padding: 0.75rem; text-align: center; }
+  .sv { font-size: 1.5rem; font-weight: 700; color: #fff; }
+  .sl { font-size: 0.7rem; color: #888; margin-top: 0.15rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  .origin { background: #161616; border: 1px solid #222; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; }
+  .oh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
+  .on { color: #fff; font-weight: 600; font-size: 0.85rem; }
+  .badge { font-size: 0.7rem; color: #4ade80; }
+  .badge.off { color: #555; }
+  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
+  th { color: #555; font-weight: 500; text-align: right; padding: 0 0 0.2rem; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
+  th:first-child { text-align: left; }
+  td { padding: 0.15rem 0; color: #ccc; }
+  td:first-child { color: #666; }
+  td:nth-child(n+2) { text-align: right; }
+  .footer { display: flex; justify-content: space-between; margin-top: 1rem; }
+  a { color: #888; font-size: 0.75rem; text-decoration: none; }
   a:hover { color: #bbb; }
+  .ver { color: #555; font-size: 0.75rem; }
 </style>
 </head>
 <body>
 <div class="card">
-  <h1>Party-Sockets</h1>
-  <div class="status"><span class="dot"></span> Online</div>
-  <div class="stats">
-    <div class="stat"><div class="stat-value">${roomCount}</div><div class="stat-label">Rooms</div></div>
-    <div class="stat"><div class="stat-value">${clientCount}</div><div class="stat-label">Clients</div></div>
+  <div class="header">
+    <h1>Party-Sockets</h1>
+    <div class="status"><span class="dot"></span> Online</div>
+  </div>
+  <div class="uptime">Uptime ${uptime}</div>
+  <div class="live">
+    <div class="stat"><div class="sv">${roomCount}</div><div class="sl">Rooms</div></div>
+    <div class="stat"><div class="sv">${clientCount}</div><div class="sl">Clients</div></div>
   </div>${originsHtml}
-  <a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span style="float:right;color:#555;font-size:0.8rem">v${VERSION}</span>
+  <div class="footer"><a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span class="ver">v${VERSION}</span></div>
 </div>
 </body>
 </html>`;
@@ -280,7 +397,7 @@ const server = Bun.serve({
   websocket: {
     idleTimeout: 10,
     open(ws) {
-      // Nothing to do on open
+      incrementStat(ws.data.origin || "unknown", "connections");
     },
     message(ws, raw) {
       let msg: ClientMessage;
