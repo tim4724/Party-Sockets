@@ -353,6 +353,15 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   a { color: #888; font-size: 0.75rem; text-decoration: none; }
   a:hover { color: #bbb; }
   .ver { color: #555; font-size: 0.75rem; }
+  #test-section { margin-top: 1rem; }
+  #test-btn { background: #222; border: 1px solid #333; color: #ccc; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; width: 100%; }
+  #test-btn:hover { background: #2a2a2a; border-color: #444; }
+  #test-btn:disabled { opacity: 0.5; cursor: default; }
+  #test-chart { width: 100%; height: 100px; margin-top: 0.75rem; display: none; }
+  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem; font-size: 0.75rem; text-align: center; }
+  .ts { background: #222; border-radius: 6px; padding: 0.4rem; }
+  .ts-val { color: #fff; font-weight: 600; }
+  .ts-label { color: #666; font-size: 0.6rem; text-transform: uppercase; margin-top: 0.1rem; }
 </style>
 </head>
 <body>
@@ -366,8 +375,167 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <div class="stat"><div class="sv">${roomCount}</div><div class="sl">Rooms</div></div>
     <div class="stat"><div class="sv">${clientCount}</div><div class="sl">Clients</div></div>
   </div>${originsHtml}
+  <div id="test-section">
+    <button id="test-btn" onclick="runTest()">Test Latency</button>
+    <canvas id="test-chart"></canvas>
+    <div id="test-stats"></div>
+  </div>
   <div class="footer"><a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span class="ver">v${VERSION}</span></div>
 </div>
+<script>
+function runTest() {
+  const btn = document.getElementById('test-btn');
+  const canvas = document.getElementById('test-chart');
+  const statsEl = document.getElementById('test-stats');
+  const ctx = canvas.getContext('2d');
+
+  btn.disabled = true;
+  btn.textContent = 'Connecting...';
+  canvas.style.display = 'block';
+  statsEl.style.display = 'grid';
+  statsEl.innerHTML = ['Min','Avg','Max','Jitter'].map(l => '<div class="ts"><div class="ts-val" style="color:#555">-</div><div class="ts-label">' + l + '</div></div>').join('');
+
+  const dpr = window.devicePixelRatio || 1;
+  const rect = canvas.getBoundingClientRect();
+  canvas.width = rect.width * dpr;
+  canvas.height = rect.height * dpr;
+  ctx.scale(dpr, dpr);
+  const W = rect.width, H = rect.height;
+
+  const samples = [];
+  const DURATION = 15000;
+  const INTERVAL = 200;
+  let pending = null;
+  let startTime = null;
+
+  function getColor(avg) {
+    if (avg < 50) return '#4ade80';
+    if (avg < 150) return '#facc15';
+    return '#f87171';
+  }
+
+
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = new WebSocket(proto + '//' + location.host);
+  const clientId = 'test-' + Math.random().toString(36).slice(2, 8);
+
+  function drawChart() {
+    ctx.clearRect(0, 0, W, H);
+    if (samples.length < 2) return;
+
+    const maxMs = Math.max(...samples.map(s => s.rtt), 10);
+    const yScale = (H - 20) / maxMs;
+    const xScale = W / DURATION;
+
+    // Grid lines
+    ctx.strokeStyle = '#2a2a2a';
+    ctx.lineWidth = 0.5;
+    const gridLines = [0.25, 0.5, 0.75];
+    for (const g of gridLines) {
+      const gy = H - 10 - (maxMs * g * yScale);
+      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
+    }
+
+    // Y-axis labels
+    ctx.fillStyle = '#555';
+    ctx.font = '9px -apple-system, system-ui, sans-serif';
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(maxMs) + 'ms', W - 2, 12);
+    ctx.fillText('0', W - 2, H - 2);
+
+    // Line with color changing at threshold crossings
+    ctx.lineWidth = 1.5;
+    ctx.lineCap = 'round';
+    const thresholds = [50, 150];
+    for (let i = 1; i < samples.length; i++) {
+      const x0 = samples[i-1].t * xScale, y0 = H - 10 - (samples[i-1].rtt * yScale);
+      const x1 = samples[i].t * xScale, y1 = H - 10 - (samples[i].rtt * yScale);
+      const rtt0 = samples[i-1].rtt, rtt1 = samples[i].rtt;
+      // Find threshold crossings and sort by position
+      const splits = [0];
+      for (const th of thresholds) {
+        if ((rtt0 < th && rtt1 >= th) || (rtt0 >= th && rtt1 < th)) {
+          splits.push((th - rtt0) / (rtt1 - rtt0));
+        }
+      }
+      splits.push(1);
+      splits.sort((a, b) => a - b);
+      for (let j = 1; j < splits.length; j++) {
+        const t0 = splits[j-1], t1 = splits[j];
+        const sx0 = x0 + (x1 - x0) * t0, sy0 = y0 + (y1 - y0) * t0;
+        const sx1 = x0 + (x1 - x0) * t1, sy1 = y0 + (y1 - y0) * t1;
+        const midRtt = rtt0 + (rtt1 - rtt0) * ((t0 + t1) / 2);
+        ctx.strokeStyle = getColor(midRtt);
+        ctx.beginPath(); ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
+      }
+    }
+
+    // Dots colored individually
+    for (const s of samples) {
+      const x = s.t * xScale;
+      const y = H - 10 - (s.rtt * yScale);
+      ctx.fillStyle = getColor(s.rtt);
+      ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
+    }
+  }
+
+  function showStats() {
+    const rtts = samples.map(s => s.rtt);
+    const min = Math.min(...rtts);
+    const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
+    const sorted = [...rtts].sort((a, b) => a - b);
+    const p95 = sorted[Math.floor(sorted.length * 0.95)];
+    const jitter = rtts.reduce((sum, r) => sum + Math.abs(r - avg), 0) / rtts.length;
+
+    statsEl.style.display = 'grid';
+    statsEl.innerHTML = [
+      ['Min', min, min.toFixed(1) + 'ms'],
+      ['Avg', avg, avg.toFixed(1) + 'ms'],
+      ['P95', p95, p95.toFixed(1) + 'ms'],
+      ['Jitter', jitter, jitter.toFixed(1) + 'ms'],
+    ].map(([l, n, v]) => '<div class="ts"><div class="ts-val" style="color:' + getColor(n) + '">' + v + '</div><div class="ts-label">' + l + '</div></div>').join('');
+  }
+
+  function finish() {
+    ws.close();
+    btn.disabled = false;
+    btn.textContent = 'Test Again';
+  }
+
+  ws.onopen = () => {
+    ws.send(JSON.stringify({ type: 'create', clientId, maxClients: 1 }));
+  };
+
+  ws.onmessage = (e) => {
+    const msg = JSON.parse(e.data);
+    if (msg.type === 'created') {
+      startTime = performance.now();
+      const iv = setInterval(() => {
+        const elapsed = performance.now() - startTime;
+        if (elapsed >= DURATION) { clearInterval(iv); finish(); return; }
+        const remaining = Math.ceil((DURATION - elapsed) / 1000);
+        btn.textContent = 'Testing... ' + remaining + 's';
+        if (pending === null) {
+          pending = performance.now();
+          ws.send(JSON.stringify({ type: 'send', to: clientId, data: 'ping' }));
+        }
+      }, INTERVAL);
+    } else if (msg.type === 'message' && pending !== null) {
+      const rtt = performance.now() - pending;
+      const t = performance.now() - startTime;
+      pending = null;
+      samples.push({ t, rtt });
+      drawChart();
+      showStats();
+    } else if (msg.type === 'error') {
+      btn.textContent = 'Error: ' + msg.message;
+      btn.disabled = false;
+    }
+  };
+
+  ws.onerror = () => { btn.textContent = 'Connection failed'; btn.disabled = false; };
+}
+</script>
 </body>
 </html>`;
 }
