@@ -578,8 +578,8 @@ const server = Bun.serve({
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
       const { roomCount, clientCount, origins } = getOriginStats();
-      const ip = server.requestIP(req);
-      const ipFamily = ip?.address?.startsWith("::ffff:") ? "IPv4" : ip?.family;
+      const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0].trim();
+      const ipFamily = forwarded?.includes(":") && !forwarded.startsWith("::ffff:") ? "IPv6" : "IPv4";
       return new Response(statusPage(roomCount, clientCount, origins, ipFamily), {
         headers: { "Content-Type": "text/html" },
       });
