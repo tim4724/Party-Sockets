@@ -88,6 +88,35 @@ describe("room creation", () => {
 
     expect(msg.message).toContain("Already in a room");
   });
+
+  test("creates a room with preferred room code", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ABCD" });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room).toBe("ABCD");
+  });
+
+  test("ignores invalid preferred room code", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ab" });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room).toHaveLength(4);
+    expect(msg.room).not.toBe("ab");
+  });
+
+  test("generates new code when preferred room is taken", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "aaa", maxClients: 4, room: "XYZW" });
+    const msg1 = await waitForType(ws1, "created");
+    expect(msg1.room).toBe("XYZW");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "create", clientId: "bbb", maxClients: 4, room: "XYZW" });
+    const msg2 = await waitForType(ws2, "created");
+    expect(msg2.room).not.toBe("XYZW");
+  });
 });
 
 describe("joining", () => {

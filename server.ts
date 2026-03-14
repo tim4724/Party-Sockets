@@ -3,7 +3,7 @@ import type { ServerWebSocket } from "bun";
 // --- Types ---
 
 type ClientMessage =
-  | { type: "create"; clientId: string; maxClients: number }
+  | { type: "create"; clientId: string; maxClients: number; room?: string }
   | { type: "join"; clientId: string; room: string }
   | { type: "send"; to?: string; data: unknown };
 
@@ -157,7 +157,7 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
 
 // --- Message handlers ---
 
-function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number }) {
+function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number; room?: string }) {
   if (ws.data.room) {
     return send(ws, { type: "error", message: "Already in a room" });
   }
@@ -168,7 +168,9 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
     return send(ws, { type: "error", message: "maxClients must be a positive number" });
   }
 
-  const code = generateRoomCode();
+  const code = msg.room && /^[A-Z]{4}$/.test(msg.room) && !rooms.has(msg.room)
+    ? msg.room
+    : generateRoomCode();
   const origin = ws.data.origin || "unknown";
   const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);
