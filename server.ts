@@ -295,7 +295,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   if (allOrigins.size > 0) {
     const rows = Array.from(allOrigins)
       .map((origin) => ({ origin, live: origins.get(origin), periods: getStatsPeriods(origin) }))
-      .sort((a, b) => (b.live?.clients ?? 0) - (a.live?.clients ?? 0))
+      .sort((a, b) => (b.live?.clients ?? 0) - (a.live?.clients ?? 0) || b.periods.days365.connections - a.periods.days365.connections)
       .map(({ origin, live, periods: p }) => {
         const name = origin.replace(/^https?:\/\//, "");
         const liveLabel = live
@@ -385,7 +385,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <canvas id="test-chart"></canvas>
     <div id="test-stats"></div>
   </div>
-  <div class="footer"><a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span class="ver">v${VERSION}</span></div>
+  <div class="footer"><a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span class="ver">${VERSION}</span></div>
 </div>
 <script>
 function runTest() {
