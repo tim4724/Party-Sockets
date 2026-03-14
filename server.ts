@@ -29,7 +29,7 @@ interface Room {
 
 // --- Constants ---
 
-const VERSION = "1.1.1";
+const VERSION = "1.2.0";
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1a1a"/><line x1="32" y1="18" x2="18" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="32" y1="18" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="18" y1="42" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><circle cx="32" cy="18" r="8" fill="#f472b6"/><circle cx="18" cy="42" r="8" fill="#60a5fa"/><circle cx="46" cy="42" r="8" fill="#4ade80"/></svg>`;
 
 // --- State ---
