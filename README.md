@@ -31,7 +31,7 @@ docker run -p 3000:3000 party-sockets
 ### Connect
 
 ```js
-const ws = new WebSocket("wss://party-sockets.duckdns.org");
+const ws = new WebSocket("wss://ws.couch-games.com");
 const clientId = crypto.randomUUID(); // any unique string works
 ```
 
