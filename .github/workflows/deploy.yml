@@ -25,6 +25,7 @@ jobs:
         env:
           KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
         run: |
+          trap 'rm -f kubeconfig' EXIT
           echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
           export KUBECONFIG=$PWD/kubeconfig
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
@@ -32,4 +33,3 @@ jobs:
           echo "Deploying ${IMAGE}"
           kubectl set image deployment/party-sockets party-sockets="${IMAGE}" -n default
           kubectl rollout status deployment/party-sockets -n default --timeout=120s
-          rm -f kubeconfig
