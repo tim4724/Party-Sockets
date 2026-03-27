@@ -86,10 +86,11 @@ function aggregateStats(sinceDate: string, origin: string): DayStats {
 
 function getStatsPeriods(origin: string) {
   const now = new Date();
+  const d1 = new Date(now); d1.setDate(d1.getDate() - 1);
   const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
   const d365 = new Date(now); d365.setDate(d365.getDate() - 365);
   return {
-    today: aggregateStats(dateStr(now), origin),
+    day1: aggregateStats(dateStr(d1), origin),
     days30: aggregateStats(dateStr(d30), origin),
     days365: aggregateStats(dateStr(d365), origin),
   };
@@ -293,6 +294,15 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   // Collect all known origins (live + historical)
   const allOrigins = new Set([...origins.keys(), ...stats.keys()]);
 
+  const isLocalOrigin = (o: string) => /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(o);
+  const hasLocal = Array.from(allOrigins).some(isLocalOrigin);
+
+  // Compute non-local counts for the header
+  let publicRooms = 0, publicClients = 0;
+  for (const [origin, s] of origins) {
+    if (!isLocalOrigin(origin)) { publicRooms += s.rooms; publicClients += s.clients; }
+  }
+
   let originsHtml = "";
   if (allOrigins.size > 0) {
     const rows = Array.from(allOrigins)
@@ -309,16 +319,17 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
         const c365 = (s: DayStats) => show365 ? `<td>${fmt(s.connections)}</td>` : "";
         const r30 = (s: DayStats) => show30 ? `<td>${fmt(s.rooms)}</td>` : "";
         const r365 = (s: DayStats) => show365 ? `<td>${fmt(s.rooms)}</td>` : "";
+        const isLocal = isLocalOrigin(origin);
         const favicon = origin.startsWith("https://")
           ? `<img class="ofav" src="${origin}/favicon.ico">`
           : '';
-        return `<div class="origin">
-  <div class="oh"><span class="on">${favicon}${name}</span>${liveLabel}</div>
+        return `<div class="origin"${isLocal ? ' data-local' : ''}>
+  <div class="oh"><span class="on">${favicon}<span class="on-text">${name}</span></span>${liveLabel}</div>
   <table>
-    <thead><tr><th></th><th>Today</th>${h30}${h365}</tr></thead>
+    <thead><tr><th></th><th>24h</th>${h30}${h365}</tr></thead>
     <tbody>
-      <tr><td>Connections</td><td>${fmt(p.today.connections)}</td>${c30(p.days30)}${c365(p.days365)}</tr>
-      <tr><td>Rooms</td><td>${fmt(p.today.rooms)}</td>${r30(p.days30)}${r365(p.days365)}</tr>
+      <tr><td>Connections</td><td>${fmt(p.day1.connections)}</td>${c30(p.days30)}${c365(p.days365)}</tr>
+      <tr><td>Rooms</td><td>${fmt(p.day1.rooms)}</td>${r30(p.days30)}${r365(p.days365)}</tr>
     </tbody>
   </table>
 </div>`;
@@ -336,22 +347,23 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
 <title>Party-Sockets</title>
 <style>
   * { margin: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 1rem; }
-  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 2rem; max-width: 400px; width: 100%; }
+  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 0.75rem; }
+  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 1.25rem; max-width: 420px; width: 100%; }
   h1 { font-size: 1.4rem; }
   .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
-  .status { display: flex; align-items: center; gap: 0.4rem; color: #4ade80; font-size: 0.8rem; }
-  .dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 6px #4ade80; }
+  .status { display: flex; align-items: center; gap: 0.4rem; color: #4ade80; font-size: 0.8rem; white-space: nowrap; }
+  .dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 6px #4ade80; flex-shrink: 0; }
   .uptime { color: #555; font-size: 0.75rem; margin-bottom: 1.25rem; }
   .live { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
   .stat { background: #222; border-radius: 8px; padding: 0.75rem; text-align: center; }
   .sv { font-size: 1.5rem; font-weight: 700; color: #fff; }
   .sl { font-size: 0.7rem; color: #888; margin-top: 0.15rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .origin { background: #161616; border: 1px solid #222; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; }
-  .oh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; }
-  .on { color: #fff; font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.4rem; }
-  .ofav { width: 14px; height: 14px; border-radius: 2px; }
-  .badge { font-size: 0.7rem; color: #4ade80; }
+  .origin { background: #161616; border: 1px solid #222; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; overflow: hidden; }
+  .oh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; gap: 0.5rem; min-width: 0; }
+  .on { color: #fff; font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.4rem; min-width: 0; overflow: hidden; }
+  .on-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ofav { width: 14px; height: 14px; border-radius: 2px; flex-shrink: 0; }
+  .badge { font-size: 0.7rem; color: #4ade80; white-space: nowrap; flex-shrink: 0; }
   .badge.off { color: #555; }
   table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
   th { color: #555; font-weight: 500; text-align: right; padding: 0 0 0.2rem; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
@@ -372,19 +384,33 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
   .ts { background: #222; border-radius: 6px; padding: 0.4rem; }
   .ts-val { color: #fff; font-weight: 600; }
   .ts-label { color: #666; font-size: 0.6rem; text-transform: uppercase; margin-top: 0.1rem; }
+  .toggle { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; color: #666; margin-bottom: 0.75rem; cursor: pointer; user-select: none; }
+  .toggle input { display: none; }
+  .toggle-track { width: 28px; height: 16px; background: #333; border-radius: 8px; position: relative; transition: background 0.2s; flex-shrink: 0; }
+  .toggle input:checked + .toggle-track { background: #4ade80; }
+  .toggle-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: #fff; border-radius: 50%; transition: transform 0.2s; }
+  .toggle input:checked + .toggle-track::after { transform: translateX(12px); }
+  html.hide-local [data-local] { display: none; }
+  @media (min-width: 500px) { .card { padding: 2rem; max-width: 540px; } }
+  @media (max-width: 360px) {
+    #test-stats { grid-template-columns: 1fr 1fr; }
+    table { font-size: 0.7rem; }
+  }
 </style>
+<script>if(localStorage.getItem('show-local')!=='1')document.documentElement.classList.add('hide-local');</script>
 </head>
 <body>
-<div class="card">
+<div class="card" id="card">
   <div class="header">
     <h1>Party-Sockets</h1>
     <div class="status"><span class="dot"></span> Online</div>
   </div>
   <div class="uptime">Uptime ${uptime}${ipFamily ? ` · ${ipFamily}` : ''}</div>
   <div class="live">
-    <div class="stat"><div class="sv">${roomCount}</div><div class="sl">Rooms</div></div>
-    <div class="stat"><div class="sv">${clientCount}</div><div class="sl">Clients</div></div>
-  </div>${originsHtml}
+    <div class="stat"><div class="sv" data-all="${roomCount}" data-public="${publicRooms}">${publicRooms}</div><div class="sl">Rooms</div></div>
+    <div class="stat"><div class="sv" data-all="${clientCount}" data-public="${publicClients}">${publicClients}</div><div class="sl">Clients</div></div>
+  </div>
+  ${hasLocal ? '<label class="toggle"><input type="checkbox" id="show-local"><span class="toggle-track"></span> Show local origins</label>' : ''}${originsHtml}
   <div id="test-section">
     <button id="test-btn">Test Latency</button>
     <canvas id="test-chart"></canvas>
@@ -551,6 +577,22 @@ document.querySelectorAll('.ofav').forEach(function(img) {
 });
 var hasTestedOnce = false;
 setInterval(function() { if (!hasTestedOnce) location.reload(); }, 5000);
+var showLocal = document.getElementById('show-local');
+if (showLocal) {
+  var root = document.documentElement;
+  if (localStorage.getItem('show-local') === '1') { showLocal.checked = true; root.classList.remove('hide-local'); }
+  function updateCounts(showAll) {
+    document.querySelectorAll('.sv[data-all]').forEach(function(el) {
+      el.textContent = showAll ? el.getAttribute('data-all') : el.getAttribute('data-public');
+    });
+  }
+  updateCounts(showLocal.checked);
+  showLocal.addEventListener('change', function() {
+    root.classList.toggle('hide-local', !this.checked);
+    localStorage.setItem('show-local', this.checked ? '1' : '0');
+    updateCounts(this.checked);
+  });
+}
 </script>
 </body>
 </html>`;
