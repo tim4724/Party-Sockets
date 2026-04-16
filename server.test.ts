@@ -283,6 +283,52 @@ describe("reconnect", () => {
     expect(msg.from).toBe("host");
     expect(msg.data).toBe("ping");
   });
+
+  test("replaced connection is closed with code 4000", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const closePromise = new Promise<CloseEvent>((resolve) => {
+      ws2.onclose = resolve;
+    });
+
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "guest", room });
+    await waitForType(ws3, "joined");
+
+    const closeEvent = await closePromise;
+    expect(closeEvent.code).toBe(4000);
+    expect(closeEvent.reason).toBe("replaced");
+  });
+
+  test("replaced connection does not trigger peer_left for host", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    let peerLeft = false;
+    ws1.addEventListener("message", (e) => {
+      if (JSON.parse(e.data).type === "peer_left") peerLeft = true;
+    });
+
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "guest", room });
+    await waitForType(ws3, "joined");
+
+    // Let the server finish closing ws2 and processing its close handler
+    await new Promise((r) => setTimeout(r, 50));
+    expect(peerLeft).toBe(false);
+    expect(rooms.get(room)?.clients.size).toBe(2);
+  });
 });
 
 describe("protocol errors", () => {

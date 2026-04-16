@@ -202,9 +202,10 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
 
   const existingWs = room.clients.get(msg.clientId);
   if (existingWs) {
-    // Reconnect: replace the old connection
+    // Reconnect: detach and close the old connection before swapping in the new one
     existingWs.data.room = undefined;
     existingWs.data.clientId = undefined;
+    existingWs.close(4000, "replaced");
     room.clients.set(msg.clientId, ws);
     ws.data.clientId = msg.clientId;
     ws.data.room = msg.room;

@@ -80,7 +80,14 @@ ws.onmessage = (event) => {
 
 ### Reconnect
 
-Joining with the same `clientId` replaces the old connection — no special reconnect message needed.
+Joining with the same `clientId` replaces the old connection — no special reconnect message needed. The old WebSocket is closed by the server with code `4000` and reason `"replaced"`, so if you're managing a reconnect loop, treat that close as terminal rather than retrying.
+
+```js
+ws.onclose = (event) => {
+  if (event.code === 4000) return; // replaced by a newer connection, don't reconnect
+  // ...your reconnect logic
+};
+```
 
 ### Message flow
 
