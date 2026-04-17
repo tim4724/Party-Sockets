@@ -36,6 +36,7 @@ const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"
 
 const rooms = new Map<string, Room>();
 const serverStartedAt = Date.now();
+let draining = false;
 
 // --- Stats ---
 
@@ -159,6 +160,9 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
 // --- Message handlers ---
 
 function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number; room?: string }) {
+  if (draining) {
+    return send(ws, { type: "error", message: "Server draining" });
+  }
   if (ws.data.room) {
     return send(ws, { type: "error", message: "Already in a room" });
   }
@@ -660,4 +664,33 @@ const server = Bun.serve({
 
 console.log(`Party-Sockets running on port ${server.port}`);
 
-export { server, rooms };
+// --- Graceful shutdown ---
+// On SIGTERM, refuse new `create` messages so fresh games land on the new pod,
+// then wait for in-progress rooms to empty before exiting. Kubernetes must grant
+// enough terminationGracePeriodSeconds to cover the longest realistic game.
+
+const DRAIN_POLL_INTERVAL_MS = 500;
+const DRAIN_DEADLINE_MS = 590_000; // just under a 600s K8s grace period
+
+async function drain(options: { exitOnComplete?: boolean; deadlineMs?: number } = {}): Promise<number> {
+  if (draining) return rooms.size;
+  draining = true;
+  const deadline = Date.now() + (options.deadlineMs ?? DRAIN_DEADLINE_MS);
+  console.log(`[drain] starting with ${rooms.size} rooms`);
+  while (rooms.size > 0 && Date.now() < deadline) {
+    await new Promise((r) => setTimeout(r, DRAIN_POLL_INTERVAL_MS));
+  }
+  const remaining = rooms.size;
+  console.log(`[drain] complete; ${remaining} rooms remaining`);
+  if (options.exitOnComplete !== false) process.exit(0);
+  return remaining;
+}
+
+function _resetDrainForTest() {
+  draining = false;
+}
+
+process.on("SIGTERM", () => { drain(); });
+process.on("SIGINT", () => { drain(); });
+
+export { server, rooms, drain, _resetDrainForTest };

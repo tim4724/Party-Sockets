@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
-import { server, rooms } from "./server";
+import { server, rooms, drain, _resetDrainForTest } from "./server";
 
 const URL = `ws://localhost:${server.port}`;
 
@@ -328,6 +328,74 @@ describe("reconnect", () => {
     await new Promise((r) => setTimeout(r, 50));
     expect(peerLeft).toBe(false);
     expect(rooms.get(room)?.clients.size).toBe(2);
+  });
+});
+
+describe("graceful drain", () => {
+  afterEach(() => _resetDrainForTest());
+
+  test("resolves immediately with zero rooms", async () => {
+    const remaining = await drain({ exitOnComplete: false, deadlineMs: 5000 });
+    expect(remaining).toBe(0);
+  });
+
+  test("rejects create during drain", async () => {
+    const drainPromise = drain({ exitOnComplete: false, deadlineMs: 5000 });
+
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "error");
+    expect(msg.message).toContain("draining");
+
+    await drainPromise;
+  });
+
+  test("waits for active rooms, then resolves when they empty", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    await waitForType(ws1, "created");
+    expect(rooms.size).toBe(1);
+
+    const drainPromise = drain({ exitOnComplete: false, deadlineMs: 5000 });
+
+    // Drain should still be waiting — give it a tick to loop
+    await new Promise((r) => setTimeout(r, 100));
+    expect(rooms.size).toBe(1);
+
+    // Client leaves
+    ws1.close();
+    const remaining = await drainPromise;
+    expect(remaining).toBe(0);
+  });
+
+  test("existing rooms still accept joins during drain", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 3 });
+    const { room } = await waitForType(ws1, "created");
+
+    // Start draining in the background
+    const drainPromise = drain({ exitOnComplete: false, deadlineMs: 5000 });
+    await new Promise((r) => setTimeout(r, 50));
+
+    // A controller reconnecting mid-game should still get in
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    const msg = await waitForType(ws2, "joined");
+    expect(msg.room).toBe(room);
+
+    ws1.close();
+    ws2.close();
+    await drainPromise;
+  });
+
+  test("times out and returns non-zero when rooms outlast deadline", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    await waitForType(ws1, "created");
+    expect(rooms.size).toBe(1);
+
+    const remaining = await drain({ exitOnComplete: false, deadlineMs: 200 });
+    expect(remaining).toBe(1);
   });
 });
 
