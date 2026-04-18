@@ -621,6 +621,23 @@ const server = Bun.serve({
         headers: { "Content-Type": "image/svg+xml" },
       });
     }
+    const roomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
+    if (roomMatch) {
+      const code = decodeURIComponent(roomMatch[1]);
+      const room = rooms.get(code);
+      const headers = {
+        "Content-Type": "application/json",
+        "Access-Control-Allow-Origin": "*",
+      };
+      if (!room) {
+        return new Response(JSON.stringify({ error: "Room not found" }), { status: 404, headers });
+      }
+      return new Response(JSON.stringify({
+        clients: room.clients.size,
+        maxClients: room.maxClients,
+        origin: room.origin,
+      }), { headers });
+    }
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {

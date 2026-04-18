@@ -399,6 +399,33 @@ describe("graceful drain", () => {
   });
 });
 
+describe("room info endpoint", () => {
+  const HTTP_URL = `http://localhost:${server.port}`;
+
+  test("returns 404 for unknown room", async () => {
+    const res = await fetch(`${HTTP_URL}/room/NOPE`);
+    expect(res.status).toBe(404);
+    const body = await res.json();
+    expect(body.error).toContain("not found");
+  });
+
+  test("returns room info for existing room", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 8, room: "INFO" });
+    await waitForType(ws, "created");
+
+    const res = await fetch(`${HTTP_URL}/room/INFO`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
+  });
+
+  test("sets permissive CORS header", async () => {
+    const res = await fetch(`${HTTP_URL}/room/NOPE`);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});
+
 describe("protocol errors", () => {
   test("rejects invalid JSON", async () => {
     const ws = track(await connect());
