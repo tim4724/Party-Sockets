@@ -111,17 +111,44 @@ function formatUptime(ms: number): string {
 
 // --- Room code generation ---
 
-const ROOM_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"; // no ambiguous chars (0/O, 1/I)
+const ROOM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+const ROOM_CODE_REGEX = /^[A-Z0-9]{4,8}$/;
+const ROOM_CODE_MAX_TOTAL = 8;
+const ATTEMPTS_PER_LENGTH = 10;
+
+let regionCode = (process.env.REGION_CODE || "").toUpperCase();
+validateRegionCode(regionCode);
+
+function validateRegionCode(code: string): void {
+  for (const c of code) {
+    if (!ROOM_CHARS.includes(c)) {
+      throw new Error(`REGION_CODE contains invalid character "${c}"; allowed: ${ROOM_CHARS}`);
+    }
+  }
+  if (code.length > ROOM_CODE_MAX_TOTAL - 3) {
+    throw new Error(`REGION_CODE too long; must leave room for at least 3 random chars (max ${ROOM_CODE_MAX_TOTAL - 3} chars)`);
+  }
+}
 
 function generateRoomCode(): string {
-  let code: string;
-  do {
-    code = "";
-    for (let i = 0; i < 4; i++) {
-      code += ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)];
+  const minRandom = regionCode ? 3 : 4;
+  const maxRandom = ROOM_CODE_MAX_TOTAL - regionCode.length;
+  for (let randomLen = minRandom; randomLen <= maxRandom; randomLen++) {
+    for (let attempt = 0; attempt < ATTEMPTS_PER_LENGTH; attempt++) {
+      let code = regionCode;
+      for (let i = 0; i < randomLen; i++) {
+        code += ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)];
+      }
+      if (!rooms.has(code)) return code;
     }
-  } while (rooms.has(code));
-  return code;
+  }
+  throw new Error("Could not generate a unique room code");
+}
+
+function _setRegionCodeForTest(code: string): void {
+  const next = code.toUpperCase();
+  validateRegionCode(next);
+  regionCode = next;
 }
 
 // --- Helpers ---
@@ -173,9 +200,15 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
     return send(ws, { type: "error", message: "maxClients must be a positive number" });
   }
 
-  const code = msg.room && /^[A-Z]{4}$/.test(msg.room) && !rooms.has(msg.room)
-    ? msg.room
-    : generateRoomCode();
+  let code: string;
+  if (msg.room && ROOM_CODE_REGEX.test(msg.room)) {
+    if (regionCode && !msg.room.startsWith(regionCode)) {
+      return send(ws, { type: "error", message: `Room code must start with region "${regionCode}"` });
+    }
+    code = rooms.has(msg.room) ? generateRoomCode() : msg.room;
+  } else {
+    code = generateRoomCode();
+  }
   const origin = ws.data.origin || "unknown";
   const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);
@@ -710,4 +743,4 @@ function _resetDrainForTest() {
 process.on("SIGTERM", () => { drain(); });
 process.on("SIGINT", () => { drain(); });
 
-export { server, rooms, drain, _resetDrainForTest };
+export { server, rooms, drain, _resetDrainForTest, _setRegionCodeForTest };

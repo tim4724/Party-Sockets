@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
-import { server, rooms, drain, _resetDrainForTest } from "./server";
+import { server, rooms, drain, _resetDrainForTest, _setRegionCodeForTest } from "./server";
 
 const URL = `ws://localhost:${server.port}`;
 
@@ -423,6 +423,54 @@ describe("room info endpoint", () => {
   test("sets permissive CORS header", async () => {
     const res = await fetch(`${HTTP_URL}/room/NOPE`);
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});
+
+describe("region prefix", () => {
+  afterEach(() => _setRegionCodeForTest(""));
+
+  test("generated code starts with region prefix", async () => {
+    _setRegionCodeForTest("US");
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room.startsWith("US")).toBe(true);
+    expect(msg.room).toHaveLength(5); // 2-char prefix + 3 random
+  });
+
+  test("rejects override with mismatched prefix", async () => {
+    _setRegionCodeForTest("US");
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "DEAB" });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("US");
+  });
+
+  test("accepts override with matching prefix", async () => {
+    _setRegionCodeForTest("US");
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "USAB" });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room).toBe("USAB");
+  });
+
+  test("escalates length when all attempts at base length collide", async () => {
+    _setRegionCodeForTest("US");
+    // Pre-fill every 5-char "US___" code so the generator is forced to length 6.
+    const chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
+    for (const a of chars) for (const b of chars) for (const c of chars) {
+      rooms.set(`US${a}${b}${c}`, { maxClients: 1, origin: "test", clients: new Map() });
+    }
+
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room.startsWith("US")).toBe(true);
+    expect(msg.room.length).toBeGreaterThanOrEqual(6);
   });
 });
 
