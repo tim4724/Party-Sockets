@@ -1,6 +1,6 @@
 {
   "name": "party-sockets",
-  "version": "1.7.0",
+  "version": "1.8.0",
   "description": "Minimal WebSocket relay server for party games",
   "scripts": {
     "start": "bun run server.ts",
