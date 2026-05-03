@@ -645,8 +645,11 @@ const server = Bun.serve({
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ status: "ok" }), {
-        headers: { "Content-Type": "application/json" },
+      return new Response(JSON.stringify({ status: "ok", regionCode }), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
       });
     }
     if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {

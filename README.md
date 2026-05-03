@@ -4,7 +4,7 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 ## How it works
 
-- A client **creates** a room (server assigns a 4-char code, or uses a preferred code) with a max client limit
+- A client **creates** a room (server assigns a variable-length code, or uses a preferred code) with a max client limit
 - Other clients **join** by room code
 - Clients provide their own UUID — reconnecting with the same UUID replaces the old connection
 - Messages can be **broadcast** to all peers or **sent** to a specific client
@@ -17,13 +17,15 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 bun run server.ts
 # or
 PORT=8080 bun run server.ts
+# or, with a region prefix on all room codes
+REGION_CODE=WS PORT=8080 bun run server.ts
 ```
 
 ## Docker
 
 ```sh
 docker build -t party-sockets .
-docker run -p 3000:3000 party-sockets
+docker run -p 3000:3000 -e PORT=3000 -e REGION_CODE=WS party-sockets
 ```
 
 ## Usage
@@ -44,7 +46,7 @@ ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "A3KX" }));
 ```
 
-If the preferred `room` code is a valid 4-letter code and not already taken, it will be used. Otherwise the server generates a new one.
+If the preferred `room` code is a valid A-Z0-9 string (4–8 chars), not already taken, and matches the server's `REGION_CODE` prefix (when set), it will be used. Otherwise the server returns an error.
 
 ### Join a room
 
@@ -68,7 +70,7 @@ ws.send(JSON.stringify({ type: "send", to: "uuid-of-target", data: "hello" }));
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
   switch (msg.type) {
-    case "created":     // room created, msg.room is the 4-char code
+    case "created":     // room created, msg.room is the room code
     case "joined":      // joined room, msg.clients is the list of client IDs
     case "peer_joined": // new peer, msg.clientId
     case "peer_left":   // peer disconnected, msg.clientId
@@ -119,6 +121,23 @@ sequenceDiagram
     S->>A: { type: "peer_left", clientId: "bbb" }
 ```
 
+## HTTP API
+
+All HTTP endpoints include `Access-Control-Allow-Origin: *`.
+
+### `GET /health`
+
+Liveness probe and region discovery.
+
+- **200** — `{ status: "ok", regionCode: string }` where `regionCode` is the server's `REGION_CODE` (empty string if unset).
+
+### `GET /room/:code`
+
+Check whether a room exists.
+
+- **200** — room found: `{ clients: number, maxClients: number, origin: string }`
+- **404** — room not found: `{ error: "Room not found" }`
+
 ## Protocol reference
 
 All messages are JSON over WebSocket.
@@ -127,7 +146,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients`, `room?` | Create a new room (optionally with a preferred code) |
+| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be A-Z0-9, 4–8 chars, and match the server's `REGION_CODE` prefix (if set). |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 
