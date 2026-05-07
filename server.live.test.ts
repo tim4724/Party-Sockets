@@ -107,6 +107,8 @@ describe.skipIf(!LIVE)("live", () => {
     expect(res.headers.get("content-type")).toContain("text/html");
   });
 
+  // Cross-region WS handshakes (fra→nrt etc.) can run well past the default
+  // 5s test timeout from a local machine.
   test("?instance= pins WS to each machine", async () => {
     const ids = getInstanceIds();
     if (ids.length < 2) {
@@ -120,7 +122,7 @@ describe.skipIf(!LIVE)("live", () => {
       expect(msg.instance).toBe(id);
       ws.close();
     }
-  });
+  }, 30000);
 
   test("?instance= routes away from the LB default", async () => {
     const ids = getInstanceIds();
