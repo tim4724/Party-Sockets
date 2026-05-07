@@ -483,19 +483,12 @@ describe("protocol errors", () => {
 
 describe("instance routing", () => {
   test("returns fly-replay when ?instance= doesn't match local INSTANCE_ID", async () => {
+    // No FLY_APP_NAME — isKnownInstance trusts the input.
     const res = await fetch(`http://localhost:${server.port}/health?instance=other`, {
       redirect: "manual",
     });
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("prefer_instance=other;timeout=5s");
-  });
-
-  test("serves locally when fly-preferred-instance-unavailable is set (fallback hop)", async () => {
-    const res = await fetch(`http://localhost:${server.port}/health?instance=other`, {
-      headers: { "fly-preferred-instance-unavailable": "other" },
-    });
-    expect(res.status).toBe(200);
-    expect(res.headers.get("fly-replay")).toBeNull();
+    expect(res.headers.get("fly-replay")).toBe("instance=other;timeout=5s;fallback=force_self");
   });
 
   test("serves locally when ?instance= matches local INSTANCE_ID", async () => {
@@ -518,7 +511,7 @@ describe("instance routing", () => {
     // Path probe would normally fire for /A3KX, but ?instance= short-circuits it.
     const res = await fetch(`http://localhost:${server.port}/A3KX?instance=other`);
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("prefer_instance=other;timeout=5s");
+    expect(res.headers.get("fly-replay")).toBe("instance=other;timeout=5s;fallback=force_self");
   });
 
   test("/<lowercase> doesn't trigger probe", async () => {
@@ -569,7 +562,23 @@ describe("peer probe", () => {
 
     const res = await origFetch(`http://localhost:${server.port}/A3KX`);
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("prefer_instance=def456;timeout=5s");
+    expect(res.headers.get("fly-replay")).toBe("instance=def456;timeout=5s;fallback=force_self");
+  });
+
+  test("?instance=<unknown> falls through instead of emitting fly-replay", async () => {
+    // FLY_APP_NAME is set in this describe; mocked DNS returns abc123 + def456.
+    // An unknown ID should not trigger a replay (which would 502 at Fly's edge).
+    const res = await origFetch(`http://localhost:${server.port}/health?instance=deadbeef`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("?instance=<known-peer> emits fly-replay", async () => {
+    const res = await origFetch(`http://localhost:${server.port}/health?instance=abc123`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(409);
+    expect(res.headers.get("fly-replay")).toBe("instance=abc123;timeout=5s;fallback=force_self");
   });
 
   test("falls through when no peer holds the room", async () => {

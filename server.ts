@@ -176,13 +176,22 @@ async function findRoomOnPeers(code: string): Promise<string | null> {
   return (await Promise.all(probes)).find((x) => x) ?? null;
 }
 
+async function isKnownInstance(id: string): Promise<boolean> {
+  // Outside Fly we can't validate — trust the input so local/test envs work.
+  if (!process.env.FLY_APP_NAME) return true;
+  const peers = await getPeerInstanceIds();
+  return peers.includes(id);
+}
+
 function flyReplayToInstance(id: string): Response {
-  // prefer_instance falls back to any healthy machine if the target is gone,
-  // where instance=...;fallback=force_self 502s on unknown IDs. timeout=5s
-  // gives a scaled-to-zero target time to wake up before falling back.
+  // instance= forces cross-region routing; prefer_instance silently falls back
+  // to the local edge's machine. timeout=5s lets a scaled-to-zero target wake
+  // up; force_self handles the case where it's known but unreachable. Unknown
+  // IDs are filtered upstream via isKnownInstance to avoid the 502 those
+  // produce here.
   return new Response(null, {
     status: 409,
-    headers: { "fly-replay": `prefer_instance=${id};timeout=5s` },
+    headers: { "fly-replay": `instance=${id};timeout=5s;fallback=force_self` },
   });
 }
 
@@ -676,14 +685,14 @@ const server = Bun.serve({
     const url = new URL(req.url);
     // Platform-specific (Fly.io). URL/QR clients pin via ?instance=<id>; manual
     // entry uses /<code> in the path and we discover the holding machine via
-    // peer probe. prefer_instance routes to the pinned machine when available
-    // and falls back to any healthy peer when it's gone — Fly sets
-    // fly-preferred-instance-unavailable on the fallback hop, which we honor
-    // to avoid replay loops on stale URLs.
+    // peer probe. We validate the pinned ID against Fly's internal DNS — an
+    // unknown ID would otherwise emit a fly-replay that 502s at the edge.
     const requestedInstance = url.searchParams.get("instance");
-    const fellBack = req.headers.has("fly-preferred-instance-unavailable");
-    if (requestedInstance && requestedInstance !== INSTANCE_ID && !fellBack) {
-      return flyReplayToInstance(requestedInstance);
+    if (requestedInstance && requestedInstance !== INSTANCE_ID) {
+      if (await isKnownInstance(requestedInstance)) {
+        return flyReplayToInstance(requestedInstance);
+      }
+      // Unknown ID — stale URL. Fall through to local handling.
     }
     if (!requestedInstance) {
       const pathRoomMatch = url.pathname.match(/^\/([A-Z0-9]{4,8})$/);
@@ -699,38 +708,6 @@ const server = Bun.serve({
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
         },
-      });
-    }
-    // Temporary diagnostic for comparing fly-replay forms. Remove once routing
-    // semantics are confirmed.
-    //   GET /debug/replay?form=instance|prefer_instance&id=<machine-id>
-    if (url.pathname === "/debug/replay") {
-      const id = url.searchParams.get("id") ?? "";
-      const replayed = req.headers.has("fly-replay-src")
-        || req.headers.has("fly-preferred-instance-unavailable");
-      if (!id || id === INSTANCE_ID || replayed) {
-        return new Response(JSON.stringify({
-          instance: INSTANCE_ID,
-          region: REGION,
-          replayed,
-          replaySrc: req.headers.get("fly-replay-src"),
-          preferredUnavailable: req.headers.get("fly-preferred-instance-unavailable"),
-          requestedId: id,
-        }), {
-          headers: {
-            "Content-Type": "application/json",
-            "Access-Control-Allow-Origin": "*",
-          },
-        });
-      }
-      const form = url.searchParams.get("form") ?? "instance";
-      const timeout = url.searchParams.get("timeout") ?? "5s";
-      const header = form === "prefer_instance"
-        ? `prefer_instance=${id};timeout=${timeout}`
-        : `instance=${id};timeout=${timeout};fallback=force_self`;
-      return new Response(null, {
-        status: 409,
-        headers: { "fly-replay": header },
       });
     }
     if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
