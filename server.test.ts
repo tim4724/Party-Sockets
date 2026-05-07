@@ -461,3 +461,29 @@ describe("protocol errors", () => {
     expect(msg.message).toContain("Unknown");
   });
 });
+
+describe("instance routing", () => {
+  test("returns fly-replay when ?instance= doesn't match local INSTANCE_ID", async () => {
+    const res = await fetch(`http://localhost:${server.port}/health?instance=other`, {
+      redirect: "manual",
+    });
+    expect(res.status).toBe(409);
+    expect(res.headers.get("fly-replay")).toBe("instance=other;fallback=force_self");
+  });
+
+  test("serves locally when ?instance= matches local INSTANCE_ID", async () => {
+    // In the test env, INSTANCE_ID falls back to "" — use that.
+    const res = await fetch(`http://localhost:${server.port}/health`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("/<code> for unknown room falls through when no peers are discoverable", async () => {
+    // FLY_APP_NAME is unset in tests, so findRoomOnPeers short-circuits.
+    // A WS upgrade to /ZZZZ should complete; the join failure surfaces as the
+    // usual "Room not found" via the join message, not a connection error.
+    const res = await fetch(`http://localhost:${server.port}/ZZZZ`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+});

@@ -35,6 +35,21 @@ const ws = new WebSocket("wss://ws.couch-games.com");
 const clientId = crypto.randomUUID(); // any unique string works
 ```
 
+### Multi-instance routing (optional)
+
+When deployed across multiple instances behind a single anycast hostname, the upgrade URL can carry routing hints so connections land on the machine that actually holds the room:
+
+```js
+// Pin to a known instance (from a previous `created` response)
+new WebSocket("wss://ws.couch-games.com/?instance=00bb33ff");
+
+// Manual code entry: server reads /<code> from the path, probes peers via
+// internal DNS, and redirects to the holder.
+new WebSocket("wss://ws.couch-games.com/A3KX");
+```
+
+Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` helper in `server.ts` to target a different platform.
+
 ### Create a room
 
 ```js
@@ -99,7 +114,7 @@ sequenceDiagram
 
     Note over A,B: Create a room
     A->>S: { type: "create", clientId: "aaa", maxClients: 4 }
-    S->>A: { type: "created", room: "A3KX" }
+    S->>A: { type: "created", room: "A3KX", instance: "00bb33ff", region: "fra" }
 
     Note over A,B: Join a room
     B->>S: { type: "join", clientId: "bbb", room: "A3KX" }
@@ -152,7 +167,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `created` | `room` | Room created successfully |
+| `created` | `room`, `instance`, `region` | Room created. `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
 | `joined` | `room`, `clients[]` | Joined room, list of current client IDs |
 | `peer_joined` | `clientId` | A new peer joined the room |
 | `peer_left` | `clientId` | A peer disconnected |
