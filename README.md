@@ -50,6 +50,8 @@ new WebSocket("wss://ws.couch-games.com/A3KX");
 
 Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` helper in `server.ts` to target a different platform.
 
+Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring — clients get a clean "Room not found" on join instead of a connection failure.
+
 ### Create a room
 
 ```js
@@ -177,5 +179,11 @@ All messages are JSON over WebSocket.
 ## Test
 
 ```sh
+# Unit tests (in-process, no network)
 bun test
+
+# Live tests against a deployed instance
+LIVE_URL=https://ws.hexstacker.com bun run test:live
 ```
+
+Live tests pull machine IDs from `flyctl` automatically (requires `fly` CLI and auth). Pass `LIVE_INSTANCES=id1,id2` to override. Multi-machine tests self-skip on single-machine deployments.
