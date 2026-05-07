@@ -8,7 +8,7 @@ type ClientMessage =
   | { type: "send"; to?: string; data: unknown };
 
 type ServerMessage =
-  | { type: "created"; room: string }
+  | { type: "created"; room: string; instance: string; region: string }
   | { type: "joined"; room: string; clients: string[] }
   | { type: "peer_joined"; clientId: string }
   | { type: "peer_left"; clientId: string }
@@ -31,6 +31,15 @@ interface Room {
 
 const { version: VERSION } = await import("./package.json");
 const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1a1a"/><line x1="32" y1="18" x2="18" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="32" y1="18" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="18" y1="42" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><circle cx="32" cy="18" r="8" fill="#f472b6"/><circle cx="18" cy="42" r="8" fill="#60a5fa"/><circle cx="46" cy="42" r="8" fill="#4ade80"/></svg>`;
+
+const PORT = parseInt(process.env.PORT || "3000", 10);
+
+// Generic identity for instance-pinned routing. FLY_* fallbacks are the only
+// platform leak; on other platforms set INSTANCE_ID / REGION directly.
+const INSTANCE_ID = process.env.INSTANCE_ID ?? process.env.FLY_MACHINE_ID ?? "";
+const REGION = process.env.REGION ?? process.env.FLY_REGION ?? "";
+const FLY_APP_NAME = process.env.FLY_APP_NAME ?? "";
+const PEER_PROBE_TIMEOUT_MS = 500;
 
 // --- State ---
 
@@ -130,6 +139,49 @@ function generateRoomCode(): string {
   throw new Error("Could not generate a unique room code");
 }
 
+// --- Peer discovery ---
+// Manual room-code entry has no ?instance= to pin against. Use Fly's internal
+// DNS to enumerate peers, probe each via 6PN, and fly-replay to whichever one
+// holds the room. No-op when FLY_APP_NAME is unset (local dev / non-Fly).
+
+async function getPeerInstanceIds(): Promise<string[]> {
+  if (!FLY_APP_NAME) return [];
+  const dns = await import("node:dns/promises");
+  try {
+    const records = await dns.resolveTxt(`vms.${FLY_APP_NAME}.internal`);
+    return records.flat().join("")
+      .split(",")
+      .map(s => s.trim().split(" ")[0])
+      .filter((id) => id && id !== INSTANCE_ID);
+  } catch {
+    return [];
+  }
+}
+
+async function findRoomOnPeers(code: string): Promise<string | null> {
+  const peers = await getPeerInstanceIds();
+  if (peers.length === 0) return null;
+  const probes = peers.map(async (id) => {
+    try {
+      const res = await fetch(
+        `http://${id}.vm.${FLY_APP_NAME}.internal:${PORT}/room/${encodeURIComponent(code)}`,
+        { signal: AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS) },
+      );
+      return res.ok ? id : null;
+    } catch {
+      return null;
+    }
+  });
+  return (await Promise.all(probes)).find((x) => x) ?? null;
+}
+
+function flyReplayToInstance(id: string): Response {
+  return new Response(null, {
+    status: 409,
+    headers: { "fly-replay": `instance=${id};fallback=force_self` },
+  });
+}
+
 // --- Helpers ---
 
 function send(ws: ServerWebSocket<ClientData>, msg: ServerMessage) {
@@ -194,7 +246,7 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   ws.data.room = code;
 
   incrementStat(origin, "rooms");
-  send(ws, { type: "created", room: code });
+  send(ws, { type: "created", room: code, instance: INSTANCE_ID, region: REGION });
 }
 
 function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; room: string }) {
@@ -419,7 +471,7 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
     <h1>Party-Sockets</h1>
     <div class="status"><span class="dot"></span> Online</div>
   </div>
-  <div class="uptime">Uptime ${uptime}${ipFamily ? ` · ${ipFamily}` : ''}</div>
+  <div class="uptime">Uptime ${uptime}${REGION ? ` · ${REGION}` : ''}${INSTANCE_ID ? ` · ${INSTANCE_ID.slice(0, 6)}` : ''}${ipFamily ? ` · ${ipFamily}` : ''}</div>
   <div class="live">
     <div class="stat"><div class="sv" data-all="${roomCount}" data-public="${publicRooms}">${publicRooms}</div><div class="sl">Rooms</div></div>
     <div class="stat"><div class="sv" data-all="${clientCount}" data-public="${publicClients}">${publicClients}</div><div class="sl">Clients</div></div>
@@ -614,12 +666,26 @@ if (showLocal) {
 
 // --- Server ---
 
-const PORT = parseInt(process.env.PORT || "3000", 10);
-
 const server = Bun.serve({
   port: PORT,
-  fetch(req, server) {
+  async fetch(req, server) {
     const url = new URL(req.url);
+    // Platform-specific (Fly.io). URL/QR clients pin via ?instance=<id>; manual
+    // entry uses /<code> in the path and we discover the holding machine via
+    // peer probe. fallback=force_self lets a stale target degrade to a clean
+    // "Room not found" instead of a connection error.
+    const requestedInstance = url.searchParams.get("instance");
+    if (requestedInstance && requestedInstance !== INSTANCE_ID) {
+      return flyReplayToInstance(requestedInstance);
+    }
+    if (!requestedInstance) {
+      const pathRoomMatch = url.pathname.match(/^\/([A-Z0-9]{4,8})$/);
+      const requestedRoom = pathRoomMatch?.[1];
+      if (requestedRoom && !rooms.has(requestedRoom)) {
+        const peerInstance = await findRoomOnPeers(requestedRoom);
+        if (peerInstance) return flyReplayToInstance(peerInstance);
+      }
+    }
     if (url.pathname === "/health") {
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: {

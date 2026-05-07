@@ -12,7 +12,7 @@ jobs:
       contents: read
       packages: write
 
-  deploy:
+  deploy-k8s:
     needs: build
     runs-on: [self-hosted, k8s]
     steps:
@@ -33,3 +33,17 @@ jobs:
           echo "Deploying ${IMAGE}"
           kubectl set image deployment/party-sockets party-sockets="${IMAGE}" -n default
           kubectl rollout status deployment/party-sockets -n default --timeout=120s
+
+  deploy-fly:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+      - uses: superfly/flyctl-actions/setup-flyctl@master
+      - name: Deploy ghcr image to Fly
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          flyctl deploy --image "ghcr.io/${REPO_LOWER}:${{ needs.build.outputs.image_tag }}"
