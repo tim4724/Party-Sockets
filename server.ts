@@ -701,6 +701,38 @@ const server = Bun.serve({
         },
       });
     }
+    // Temporary diagnostic for comparing fly-replay forms. Remove once routing
+    // semantics are confirmed.
+    //   GET /debug/replay?form=instance|prefer_instance&id=<machine-id>
+    if (url.pathname === "/debug/replay") {
+      const id = url.searchParams.get("id") ?? "";
+      const replayed = req.headers.has("fly-replay-src")
+        || req.headers.has("fly-preferred-instance-unavailable");
+      if (!id || id === INSTANCE_ID || replayed) {
+        return new Response(JSON.stringify({
+          instance: INSTANCE_ID,
+          region: REGION,
+          replayed,
+          replaySrc: req.headers.get("fly-replay-src"),
+          preferredUnavailable: req.headers.get("fly-preferred-instance-unavailable"),
+          requestedId: id,
+        }), {
+          headers: {
+            "Content-Type": "application/json",
+            "Access-Control-Allow-Origin": "*",
+          },
+        });
+      }
+      const form = url.searchParams.get("form") ?? "instance";
+      const timeout = url.searchParams.get("timeout") ?? "5s";
+      const header = form === "prefer_instance"
+        ? `prefer_instance=${id};timeout=${timeout}`
+        : `instance=${id};timeout=${timeout};fallback=force_self`;
+      return new Response(null, {
+        status: 409,
+        headers: { "fly-replay": header },
+      });
+    }
     if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
       return new Response(FAVICON_SVG, {
         headers: { "Content-Type": "image/svg+xml" },
