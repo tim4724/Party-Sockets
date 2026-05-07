@@ -38,7 +38,6 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // platform leak; on other platforms set INSTANCE_ID / REGION directly.
 const INSTANCE_ID = process.env.INSTANCE_ID ?? process.env.FLY_MACHINE_ID ?? "";
 const REGION = process.env.REGION ?? process.env.FLY_REGION ?? "";
-const FLY_APP_NAME = process.env.FLY_APP_NAME ?? "";
 const PEER_PROBE_TIMEOUT_MS = 500;
 
 // --- State ---
@@ -145,10 +144,11 @@ function generateRoomCode(): string {
 // holds the room. No-op when FLY_APP_NAME is unset (local dev / non-Fly).
 
 async function getPeerInstanceIds(): Promise<string[]> {
-  if (!FLY_APP_NAME) return [];
+  const app = process.env.FLY_APP_NAME ?? "";
+  if (!app) return [];
   const dns = await import("node:dns/promises");
   try {
-    const records = await dns.resolveTxt(`vms.${FLY_APP_NAME}.internal`);
+    const records = await dns.resolveTxt(`vms.${app}.internal`);
     return records.flat().join("")
       .split(",")
       .map(s => s.trim().split(" ")[0])
@@ -159,12 +159,13 @@ async function getPeerInstanceIds(): Promise<string[]> {
 }
 
 async function findRoomOnPeers(code: string): Promise<string | null> {
+  const app = process.env.FLY_APP_NAME ?? "";
   const peers = await getPeerInstanceIds();
   if (peers.length === 0) return null;
   const probes = peers.map(async (id) => {
     try {
       const res = await fetch(
-        `http://${id}.vm.${FLY_APP_NAME}.internal:${PORT}/room/${encodeURIComponent(code)}`,
+        `http://${id}.vm.${app}.internal:${PORT}/room/${encodeURIComponent(code)}`,
         { signal: AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS) },
       );
       return res.ok ? id : null;
