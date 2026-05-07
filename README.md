@@ -17,15 +17,13 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 bun run server.ts
 # or
 PORT=8080 bun run server.ts
-# or, with a region prefix on all room codes
-REGION_CODE=WS PORT=8080 bun run server.ts
 ```
 
 ## Docker
 
 ```sh
 docker build -t party-sockets .
-docker run -p 3000:3000 -e PORT=3000 -e REGION_CODE=WS party-sockets
+docker run -p 3000:3000 -e PORT=3000 party-sockets
 ```
 
 ## Usage
@@ -46,7 +44,7 @@ ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "A3KX" }));
 ```
 
-If the preferred `room` code is a valid A-Z0-9 string (4–8 chars), not already taken, and matches the server's `REGION_CODE` prefix (when set), it will be used. Otherwise the server returns an error.
+If the preferred `room` code is a valid A-Z0-9 string (4–8 chars) and not already taken, it will be used. Otherwise the server assigns a fresh code.
 
 ### Join a room
 
@@ -127,9 +125,9 @@ All HTTP endpoints include `Access-Control-Allow-Origin: *`.
 
 ### `GET /health`
 
-Liveness probe and region discovery.
+Liveness probe.
 
-- **200** — `{ status: "ok", regionCode: string }` where `regionCode` is the server's `REGION_CODE` (empty string if unset).
+- **200** — `{ status: "ok" }`
 
 ### `GET /room/:code`
 
@@ -146,7 +144,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be A-Z0-9, 4–8 chars, and match the server's `REGION_CODE` prefix (if set). |
+| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be A-Z0-9, 4–8 chars. |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 

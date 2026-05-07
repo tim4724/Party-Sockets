@@ -113,42 +113,21 @@ function formatUptime(ms: number): string {
 
 const ROOM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
 const ROOM_CODE_REGEX = /^[A-Z0-9]{4,8}$/;
-const ROOM_CODE_MAX_TOTAL = 8;
+const ROOM_CODE_MIN_LEN = 4;
+const ROOM_CODE_MAX_LEN = 8;
 const ATTEMPTS_PER_LENGTH = 10;
 
-let regionCode = (process.env.REGION_CODE || "").toUpperCase();
-validateRegionCode(regionCode);
-
-function validateRegionCode(code: string): void {
-  for (const c of code) {
-    if (!ROOM_CHARS.includes(c)) {
-      throw new Error(`REGION_CODE contains invalid character "${c}"; allowed: ${ROOM_CHARS}`);
-    }
-  }
-  if (code.length > ROOM_CODE_MAX_TOTAL - 3) {
-    throw new Error(`REGION_CODE too long; must leave room for at least 3 random chars (max ${ROOM_CODE_MAX_TOTAL - 3} chars)`);
-  }
-}
-
 function generateRoomCode(): string {
-  const minRandom = regionCode ? 3 : 4;
-  const maxRandom = ROOM_CODE_MAX_TOTAL - regionCode.length;
-  for (let randomLen = minRandom; randomLen <= maxRandom; randomLen++) {
+  for (let len = ROOM_CODE_MIN_LEN; len <= ROOM_CODE_MAX_LEN; len++) {
     for (let attempt = 0; attempt < ATTEMPTS_PER_LENGTH; attempt++) {
-      let code = regionCode;
-      for (let i = 0; i < randomLen; i++) {
+      let code = "";
+      for (let i = 0; i < len; i++) {
         code += ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)];
       }
       if (!rooms.has(code)) return code;
     }
   }
   throw new Error("Could not generate a unique room code");
-}
-
-function _setRegionCodeForTest(code: string): void {
-  const next = code.toUpperCase();
-  validateRegionCode(next);
-  regionCode = next;
 }
 
 // --- Helpers ---
@@ -202,9 +181,6 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
 
   let code: string;
   if (msg.room && ROOM_CODE_REGEX.test(msg.room)) {
-    if (regionCode && !msg.room.startsWith(regionCode)) {
-      return send(ws, { type: "error", message: `Room code must start with region "${regionCode}"` });
-    }
     code = rooms.has(msg.room) ? generateRoomCode() : msg.room;
   } else {
     code = generateRoomCode();
@@ -645,7 +621,7 @@ const server = Bun.serve({
   fetch(req, server) {
     const url = new URL(req.url);
     if (url.pathname === "/health") {
-      return new Response(JSON.stringify({ status: "ok", regionCode }), {
+      return new Response(JSON.stringify({ status: "ok" }), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
@@ -746,4 +722,4 @@ function _resetDrainForTest() {
 process.on("SIGTERM", () => { drain(); });
 process.on("SIGINT", () => { drain(); });
 
-export { server, rooms, drain, _resetDrainForTest, _setRegionCodeForTest };
+export { server, rooms, drain, _resetDrainForTest };
