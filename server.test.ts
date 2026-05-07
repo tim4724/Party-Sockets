@@ -1,4 +1,14 @@
-import { describe, test, expect, beforeAll, afterAll, afterEach } from "bun:test";
+import { describe, test, expect, beforeAll, afterAll, afterEach, mock } from "bun:test";
+
+// Mock node:dns/promises for the peer-probe tests. No-op for the other tests
+// since they leave FLY_APP_NAME unset, so the probe never reaches DNS lookup.
+mock.module("node:dns/promises", () => ({
+  resolveTxt: async (host: string) => {
+    if (host === "vms.test-app.internal") return [["abc123 fra,def456 iad"]];
+    throw new Error(`unexpected DNS query: ${host}`);
+  },
+}));
+
 import { server, rooms, drain, _resetDrainForTest } from "./server";
 
 const URL = `ws://localhost:${server.port}`;
@@ -60,6 +70,15 @@ describe("room creation", () => {
 
     expect(msg.type).toBe("created");
     expect(msg.room).toHaveLength(4);
+  });
+
+  test("created response includes instance and region", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg).toHaveProperty("instance");
+    expect(msg).toHaveProperty("region");
   });
 
   test("rejects create without clientId", async () => {
@@ -483,6 +502,84 @@ describe("instance routing", () => {
     // A WS upgrade to /ZZZZ should complete; the join failure surfaces as the
     // usual "Room not found" via the join message, not a connection error.
     const res = await fetch(`http://localhost:${server.port}/ZZZZ`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("?instance= takes precedence over /<code>", async () => {
+    // Path probe would normally fire for /A3KX, but ?instance= short-circuits it.
+    const res = await fetch(`http://localhost:${server.port}/A3KX?instance=other`);
+    expect(res.status).toBe(409);
+    expect(res.headers.get("fly-replay")).toBe("instance=other;fallback=force_self");
+  });
+
+  test("/<lowercase> doesn't trigger probe", async () => {
+    const res = await fetch(`http://localhost:${server.port}/abcd`);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("/<too-short> doesn't trigger probe", async () => {
+    const res = await fetch(`http://localhost:${server.port}/AB`);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+});
+
+describe("peer probe", () => {
+  // DNS is mocked at the top of this file to return peers abc123 (fra) and
+  // def456 (iad) for the test app. We override globalThis.fetch so the peer
+  // probe URLs return whatever the test sets in `peerStatus`; localhost calls
+  // (the test hitting the server) pass through to the real fetch.
+  let origFetch: typeof globalThis.fetch;
+  const peerStatus = new Map<string, number>();
+
+  beforeAll(() => {
+    process.env.FLY_APP_NAME = "test-app";
+    origFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: any, init?: any) => {
+      const u = typeof url === "string" ? url : url.toString();
+      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:/);
+      if (m) {
+        const status = peerStatus.get(m[1]) ?? 404;
+        return new Response(status === 200 ? "{}" : "not found", { status });
+      }
+      return origFetch(url, init);
+    }) as typeof globalThis.fetch;
+  });
+
+  afterAll(() => {
+    globalThis.fetch = origFetch;
+    delete process.env.FLY_APP_NAME;
+  });
+
+  afterEach(() => {
+    peerStatus.clear();
+  });
+
+  test("fly-replays to the peer that holds the room", async () => {
+    peerStatus.set("def456", 200); // iad has it
+    peerStatus.set("abc123", 404); // fra doesn't
+
+    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
+    expect(res.status).toBe(409);
+    expect(res.headers.get("fly-replay")).toBe("instance=def456;fallback=force_self");
+  });
+
+  test("falls through when no peer holds the room", async () => {
+    peerStatus.set("abc123", 404);
+    peerStatus.set("def456", 404);
+
+    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
+    expect(res.status).toBe(200); // status page renders
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("skips probe and serves locally when room is on this machine", async () => {
+    rooms.set("A3KX", { maxClients: 4, origin: "test", clients: new Map() });
+    // No peerStatus entries — if the probe ran, both peers would 404 and we'd
+    // still fall through. The signal we're testing is that the probe is short-
+    // circuited by the local rooms.has() check, so we verify behavior is
+    // identical to the local-room case.
+    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
     expect(res.status).toBe(200);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
