@@ -487,7 +487,15 @@ describe("instance routing", () => {
       redirect: "manual",
     });
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("instance=other;fallback=force_self");
+    expect(res.headers.get("fly-replay")).toBe("prefer_instance=other;timeout=5s");
+  });
+
+  test("serves locally when fly-preferred-instance-unavailable is set (fallback hop)", async () => {
+    const res = await fetch(`http://localhost:${server.port}/health?instance=other`, {
+      headers: { "fly-preferred-instance-unavailable": "other" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
   });
 
   test("serves locally when ?instance= matches local INSTANCE_ID", async () => {
@@ -510,7 +518,7 @@ describe("instance routing", () => {
     // Path probe would normally fire for /A3KX, but ?instance= short-circuits it.
     const res = await fetch(`http://localhost:${server.port}/A3KX?instance=other`);
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("instance=other;fallback=force_self");
+    expect(res.headers.get("fly-replay")).toBe("prefer_instance=other;timeout=5s");
   });
 
   test("/<lowercase> doesn't trigger probe", async () => {
@@ -561,7 +569,7 @@ describe("peer probe", () => {
 
     const res = await origFetch(`http://localhost:${server.port}/A3KX`);
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("instance=def456;fallback=force_self");
+    expect(res.headers.get("fly-replay")).toBe("prefer_instance=def456;timeout=5s");
   });
 
   test("falls through when no peer holds the room", async () => {

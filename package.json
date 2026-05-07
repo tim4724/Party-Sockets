@@ -4,6 +4,7 @@
   "description": "Minimal WebSocket relay server for party games",
   "scripts": {
     "start": "bun run server.ts",
-    "test": "bun test"
+    "test": "bun test server.test.ts",
+    "test:live": "bun test server.live.test.ts"
   }
 }

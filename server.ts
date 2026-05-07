@@ -177,9 +177,12 @@ async function findRoomOnPeers(code: string): Promise<string | null> {
 }
 
 function flyReplayToInstance(id: string): Response {
+  // prefer_instance falls back to any healthy machine if the target is gone,
+  // where instance=...;fallback=force_self 502s on unknown IDs. timeout=5s
+  // gives a scaled-to-zero target time to wake up before falling back.
   return new Response(null, {
     status: 409,
-    headers: { "fly-replay": `instance=${id};fallback=force_self` },
+    headers: { "fly-replay": `prefer_instance=${id};timeout=5s` },
   });
 }
 
@@ -673,10 +676,13 @@ const server = Bun.serve({
     const url = new URL(req.url);
     // Platform-specific (Fly.io). URL/QR clients pin via ?instance=<id>; manual
     // entry uses /<code> in the path and we discover the holding machine via
-    // peer probe. fallback=force_self lets a stale target degrade to a clean
-    // "Room not found" instead of a connection error.
+    // peer probe. prefer_instance routes to the pinned machine when available
+    // and falls back to any healthy peer when it's gone — Fly sets
+    // fly-preferred-instance-unavailable on the fallback hop, which we honor
+    // to avoid replay loops on stale URLs.
     const requestedInstance = url.searchParams.get("instance");
-    if (requestedInstance && requestedInstance !== INSTANCE_ID) {
+    const fellBack = req.headers.has("fly-preferred-instance-unavailable");
+    if (requestedInstance && requestedInstance !== INSTANCE_ID && !fellBack) {
       return flyReplayToInstance(requestedInstance);
     }
     if (!requestedInstance) {
