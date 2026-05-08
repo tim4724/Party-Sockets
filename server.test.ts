@@ -152,9 +152,9 @@ describe("joining", () => {
     const peerMsg = await peerJoinedPromise;
 
     expect(joinMsg.room).toBe(room);
-    expect(joinMsg.clients).toContain("host");
-    expect(joinMsg.clients).toContain("guest");
-    expect(peerMsg.clientId).toBe("guest");
+    expect(joinMsg.index).toBe(1);
+    expect(joinMsg.peers).toEqual([0]);
+    expect(peerMsg.index).toBe(1);
   });
 
   test("rejects join to non-existent room", async () => {
@@ -162,7 +162,7 @@ describe("joining", () => {
     sendMsg(ws, { type: "join", clientId: "aaa", room: "ZZZZ" });
     const msg = await waitForType(ws, "error");
 
-    expect(msg.message).toContain("not found");
+    expect(msg.message).toBe("Room not found");
   });
 
   test("rejects join when room is full", async () => {
@@ -198,9 +198,9 @@ describe("messaging", () => {
     sendMsg(ws2, { type: "send", data: { hello: "world" } });
 
     const [msg1, msg3] = await Promise.all([p1, p3]);
-    expect(msg1.from).toBe("b");
+    expect(msg1.from).toBe(1);
     expect(msg1.data).toEqual({ hello: "world" });
-    expect(msg3.from).toBe("b");
+    expect(msg3.from).toBe(1);
   });
 
   test("sends targeted message to specific client", async () => {
@@ -218,10 +218,10 @@ describe("messaging", () => {
 
     const p1 = waitForType(ws1, "message");
 
-    sendMsg(ws2, { type: "send", to: "a", data: "secret" });
+    sendMsg(ws2, { type: "send", to: 0, data: "secret" });
 
     const msg = await p1;
-    expect(msg.from).toBe("b");
+    expect(msg.from).toBe(1);
     expect(msg.data).toBe("secret");
   });
 
@@ -238,10 +238,21 @@ describe("messaging", () => {
     sendMsg(ws1, { type: "create", clientId: "a", maxClients: 2 });
     await waitForType(ws1, "created");
 
-    sendMsg(ws1, { type: "send", to: "nobody", data: "hello" });
+    sendMsg(ws1, { type: "send", to: 99, data: "hello" });
     const msg = await waitForType(ws1, "error");
 
-    expect(msg.message).toContain("not found");
+    expect(msg.message).toBe("Target peer not found");
+  });
+
+  test("rejects malformed target without crashing", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "a", maxClients: 2 });
+    await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "send", to: "constructor", data: "hello" } as any);
+    const msg = await waitForType(ws1, "error");
+
+    expect(msg.message).toBe("Target peer not found");
   });
 });
 
@@ -259,7 +270,7 @@ describe("disconnect", () => {
     ws2.close();
     const msg = await peerLeftPromise;
 
-    expect(msg.clientId).toBe("guest");
+    expect(msg.index).toBe(1);
   });
 
   test("room is cleaned up when last client leaves", async () => {
@@ -291,15 +302,16 @@ describe("reconnect", () => {
     sendMsg(ws3, { type: "join", clientId: "guest", room });
     const joinMsg = await waitForType(ws3, "joined");
 
-    expect(joinMsg.clients).toContain("host");
-    expect(joinMsg.clients).toContain("guest");
+    // Same slot as before — proves clientId match preserves identity
+    expect(joinMsg.index).toBe(1);
+    expect(joinMsg.peers).toEqual([0]);
 
     // New connection should receive messages
     const msgPromise = waitForType(ws3, "message");
     sendMsg(ws1, { type: "send", data: "ping" });
     const msg = await msgPromise;
 
-    expect(msg.from).toBe("host");
+    expect(msg.from).toBe(0);
     expect(msg.data).toBe("ping");
   });
 
@@ -346,7 +358,80 @@ describe("reconnect", () => {
     // Let the server finish closing ws2 and processing its close handler
     await new Promise((r) => setTimeout(r, 50));
     expect(peerLeft).toBe(false);
-    expect(rooms.get(room)?.clients.size).toBe(2);
+    expect(rooms.get(room)?.active).toBe(2);
+  });
+
+  test("same clientId reclaims disconnected slot", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    const firstJoin = await waitForType(ws2, "joined");
+    expect(firstJoin.index).toBe(1);
+
+    const peerLeftPromise = waitForType(ws1, "peer_left");
+    ws2.close();
+    expect((await peerLeftPromise).index).toBe(1);
+
+    const peerJoinedPromise = waitForType(ws1, "peer_joined");
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "guest", room });
+    const secondJoin = await waitForType(ws3, "joined");
+
+    expect(secondJoin.index).toBe(1);
+    expect(secondJoin.peers).toEqual([0]);
+    expect((await peerJoinedPromise).index).toBe(1);
+    expect(rooms.get(room)?.active).toBe(2);
+  });
+
+  test("new clientId cannot consume a disconnected owned slot", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const peerLeftPromise = waitForType(ws1, "peer_left");
+    ws2.close();
+    await peerLeftPromise;
+
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "stranger", room });
+    const msg = await waitForType(ws3, "error");
+
+    expect(msg.message).toBe("Room is full");
+    expect(rooms.get(room)?.active).toBe(1);
+    expect(rooms.get(room)?.members).toHaveLength(2);
+  });
+
+  test("attacker without the clientId cannot evict an existing peer", async () => {
+    // Indices are public; clientIds stay server-side and act as the bearer
+    // secret for a slot. Guessing a peer's index is trivial, but presenting
+    // a wrong clientId mints a fresh slot instead of replacing the victim.
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 4 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest-secret", room });
+    await waitForType(ws2, "joined");
+
+    let ws2Closed = false;
+    ws2.addEventListener("close", () => { ws2Closed = true; });
+
+    // Attacker joins with a different clientId. Guest's slot must survive.
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "attacker", room });
+    const joinMsg = await waitForType(ws3, "joined");
+
+    expect(joinMsg.index).toBe(2);
+    await new Promise((r) => setTimeout(r, 50));
+    expect(ws2Closed).toBe(false);
+    expect(rooms.get(room)?.active).toBe(3);
   });
 });
 
@@ -486,7 +571,7 @@ describe("room code generation", () => {
     // crypto.getRandomValues is hard to mock; instead, pre-fill a code we
     // expect the generator to never produce naturally and verify create still
     // succeeds without returning that code.
-    rooms.set("AAAAAA", { maxClients: 1, origin: "test", clients: new Map() });
+    rooms.set("AAAAAA", { maxClients: 1, origin: "test", members: [], active: 0 });
 
     const ws = track(await connect());
     sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
@@ -696,7 +781,7 @@ describe("peer probe", () => {
 
   test("skips probe and redirects when local room exists", async () => {
     const code = codeForRegion("fra", 3);
-    rooms.set(code, { maxClients: 4, origin: "test", clients: new Map() });
+    rooms.set(code, { maxClients: 4, origin: "test", members: [], active: 0 });
     // Make a peer claim to also have the room — if the probe ran, we'd
     // emit fly-replay to that peer. Local hit must short-circuit before
     // we ever ask the network.

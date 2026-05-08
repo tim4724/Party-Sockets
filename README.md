@@ -6,8 +6,9 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 - A client **creates** a room (server assigns a 6-char code) with a max client limit
 - Other clients **join** by room code
-- Clients provide their own UUID — reconnecting with the same UUID replaces the old connection
-- Messages can be **broadcast** to all peers or **sent** to a specific client
+- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime — never reassigned
+- Clients pick their own `clientId`; it stays server-side and acts as the bearer secret for their slot. Reconnecting with the same `clientId` replaces the old connection in the same slot
+- Messages can be **broadcast** to all peers or **sent** to a specific peer index
 - `peer_left` is broadcast immediately on disconnect
 - Rooms are cleaned up when empty
 
@@ -27,7 +28,10 @@ A host creates a room; one or more guests join it.
 
 ```js
 const ws = new WebSocket("wss://your-relay.example.com");
-const clientId = crypto.randomUUID(); // any stable string works — same clientId re-identifies a reconnect
+// Treat clientId as a per-slot bearer secret. Generate it locally, never share
+// it with peers, and persist it (e.g. localStorage) if you want reconnects to
+// survive a page reload.
+const clientId = crypto.randomUUID();
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
@@ -38,9 +42,9 @@ ws.onerror = (event) => console.error("websocket error", event);
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
   switch (msg.type) {
-    case "created":     console.log("room code:", msg.room); break; // 6-char base58
-    case "peer_joined": console.log("peer joined:", msg.clientId); break;
-    case "peer_left":   console.log("peer left:", msg.clientId); break;
+    case "created":     console.log("room code:", msg.room, "my index:", msg.index); break;
+    case "peer_joined": console.log("peer joined:", msg.index); break;
+    case "peer_left":   console.log("peer left:", msg.index); break;
     case "message":     console.log("from", msg.from, msg.data); break;
     case "error":       console.error("server error:", msg.message); break;
   }
@@ -51,7 +55,7 @@ ws.onmessage = (event) => {
 
 ```js
 const ws = new WebSocket("wss://your-relay.example.com");
-const clientId = crypto.randomUUID(); // any stable string works — same clientId re-identifies a reconnect
+const clientId = crypto.randomUUID(); // keep private; presenting the same one re-identifies your slot
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "join", clientId, room: "Mu5h6Z" }));
@@ -64,7 +68,8 @@ ws.onmessage = (event) => {
   // Guests also receive `peer_joined`, `peer_left`, `message`, and `error` —
   // see the host snippet above for the full event surface.
   if (msg.type === "joined") {
-    // Broadcast to all peers. Add `to: "<peer-id>"` to target a single client.
+    // msg.index is your slot; msg.peers is everyone else's slots.
+    // Broadcast to all peers. Add `to: <peerIndex>` to target a single peer.
     ws.send(JSON.stringify({ type: "send", data: { move: "left" } }));
   }
 };
@@ -72,9 +77,11 @@ ws.onmessage = (event) => {
 
 ### Reconnect
 
-Joining with the same `clientId` replaces the old connection — no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`; treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
+Joining with the same `clientId` replaces the old connection in the same slot — no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`; treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
 
-Hosts reconnect the same way as guests: send `join` with the original `clientId` and room code, not another `create`. Other peers are not notified — their existing peer state is unchanged.
+Because the `clientId` never leaves the original client, another connection can't impersonate you and steal your slot — they'd just be allocated a fresh index. This is also why you should generate the `clientId` with a strong RNG (`crypto.randomUUID()`) and persist it locally if you want reconnect to survive a refresh.
+
+Hosts reconnect the same way as guests: send `join` with the original `clientId` and room code, not another `create`. If the old socket is still active, other peers are not notified — their existing peer state is unchanged. If the peer had already disconnected and peers saw `peer_left`, reclaiming the slot emits `peer_joined` with the same index.
 
 ```js
 ws.onclose = (event) => {
@@ -92,25 +99,25 @@ sequenceDiagram
     participant G as Guest
 
     Note over H,G: Create a room
-    H->>S: { type: "create", clientId: "host", maxClients: 4 }
-    S->>H: { type: "created", room: "Mu5h6Z", instance: "00bb33ff", region: "fra" }
+    H->>S: { type: "create", clientId: "host-secret", maxClients: 4 }
+    S->>H: { type: "created", room: "Mu5h6Z", instance: "00bb33ff", region: "fra", index: 0 }
 
     Note over H,G: Join a room
-    G->>S: { type: "join", clientId: "guest", room: "Mu5h6Z" }
-    S->>G: { type: "joined", room: "Mu5h6Z", clients: ["host", "guest"] }
-    S->>H: { type: "peer_joined", clientId: "guest" }
+    G->>S: { type: "join", clientId: "guest-secret", room: "Mu5h6Z" }
+    S->>G: { type: "joined", room: "Mu5h6Z", index: 1, peers: [0] }
+    S->>H: { type: "peer_joined", index: 1 }
 
     Note over H,G: Broadcast message (sender excluded)
     H->>S: { type: "send", data: { move: "left" } }
-    S->>G: { type: "message", from: "host", data: { move: "left" } }
+    S->>G: { type: "message", from: 0, data: { move: "left" } }
 
     Note over H,G: Targeted message
-    G->>S: { type: "send", to: "host", data: "hello" }
-    S->>H: { type: "message", from: "guest", data: "hello" }
+    G->>S: { type: "send", to: 0, data: "hello" }
+    S->>H: { type: "message", from: 1, data: "hello" }
 
     Note over H,G: Disconnect
     G--xS: connection closed
-    S->>H: { type: "peer_left", clientId: "guest" }
+    S->>H: { type: "peer_left", index: 1 }
 ```
 
 ## Protocol reference
@@ -121,19 +128,19 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. |
-| `join` | `clientId`, `room` | Join an existing room |
-| `send` | `data`, `to?` | Send to all peers or a specific client |
+| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. `clientId` is the per-slot bearer secret — keep it private. |
+| `join` | `clientId`, `room` | Join an existing room. Reusing your prior `clientId` reclaims your slot. |
+| `send` | `data`, `to?` | Send to all peers or a specific peer (`to` is a numeric index). |
 
 ### Server → Client
 
 | type | fields | description |
 |------|--------|-------------|
-| `created` | `room`, `instance`, `region` | Room created. `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
-| `joined` | `room`, `clients[]` | Joined room, list of current client IDs |
-| `peer_joined` | `clientId` | A new peer joined the room |
-| `peer_left` | `clientId` | A peer disconnected |
-| `message` | `from`, `data` | Relayed message from a peer |
+| `created` | `room`, `instance`, `region`, `index` | Room created. `index` is your slot id (always `0` for the creator). `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
+| `joined` | `room`, `index`, `peers[]` | Joined room. `index` is your slot id; `peers` lists the other present slot ids. |
+| `peer_joined` | `index` | A new peer joined the room |
+| `peer_left` | `index` | A peer disconnected |
+| `message` | `from`, `data` | Relayed message from a peer (`from` is the sender's index) |
 | `error` | `message` | Error description |
 
 ## Docker

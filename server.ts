@@ -8,26 +8,38 @@ import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 type ClientMessage =
   | { type: "create"; clientId: string; maxClients: number }
   | { type: "join"; clientId: string; room: string }
-  | { type: "send"; to?: string; data: unknown };
+  | { type: "send"; to?: number; data: unknown };
 
 type ServerMessage =
-  | { type: "created"; room: string; instance: string; region: string }
-  | { type: "joined"; room: string; clients: string[] }
-  | { type: "peer_joined"; clientId: string }
-  | { type: "peer_left"; clientId: string }
-  | { type: "message"; from: string; data: unknown }
+  | { type: "created"; room: string; instance: string; region: string; index: number }
+  | { type: "joined"; room: string; index: number; peers: number[] }
+  | { type: "peer_joined"; index: number }
+  | { type: "peer_left"; index: number }
+  | { type: "message"; from: number; data: unknown }
   | { type: "error"; message: string };
 
 interface ClientData {
   clientId?: string;
   room?: string;
   origin?: string;
+  index?: number;
 }
 
+interface Member {
+  clientId: string;
+  ws?: ServerWebSocket<ClientData>;
+}
+
+// `members` slot index = the public peer id we put on the wire. clientId stays
+// server-side and acts as the bearer secret for that slot — only a connection
+// presenting the same clientId can replace the existing socket. Slots are
+// never reassigned to a different clientId, so a `peer_joined`/`peer_left`
+// pair keeps a stable meaning for the room's lifetime.
 interface Room {
   maxClients: number;
   origin: string;
-  clients: Map<string, ServerWebSocket<ClientData>>;
+  members: Member[];
+  active: number;
 }
 
 // --- Constants ---
@@ -257,22 +269,30 @@ function broadcast(code: string, msg: ServerMessage, fromWs?: ServerWebSocket<Cl
 }
 
 function removeFromRoom(ws: ServerWebSocket<ClientData>) {
-  const { clientId, room: roomCode } = ws.data;
-  if (!clientId || !roomCode) return;
+  const { index, room: roomCode } = ws.data;
+  if (index === undefined || !roomCode) return;
 
   const room = rooms.get(roomCode);
   if (!room) return;
 
-  // Only remove if this ws is still the active connection for this clientId
-  if (room.clients.get(clientId) === ws) {
-    room.clients.delete(clientId);
+  // Only remove if this ws is still the active connection for this slot.
+  // After a reconnect-replace the old ws's data.index is cleared, so this
+  // path never fires for it — but keep the ws-identity check as a belt.
+  const member = room.members[index];
+  if (!member || member.ws !== ws) return;
+
+  member.ws = undefined;
+  room.active--;
+  ws.data.room = undefined;
+  ws.data.clientId = undefined;
+  ws.data.index = undefined;
+
+  if (room.active === 0) {
+    rooms.delete(roomCode);
+  } else {
     // Closing ws is auto-unsubscribed by Bun, so server.publish naturally
     // skips it. No explicit unsubscribe needed.
-    broadcast(roomCode, { type: "peer_left", clientId });
-
-    if (room.clients.size === 0) {
-      rooms.delete(roomCode);
-    }
+    broadcast(roomCode, { type: "peer_left", index });
   }
 }
 
@@ -294,16 +314,21 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
 
   const code = generateRoomCode();
   const origin = ws.data.origin || "unknown";
-  const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
-  room.clients.set(msg.clientId, ws);
+  const room: Room = {
+    maxClients: msg.maxClients,
+    origin,
+    members: [{ clientId: msg.clientId, ws }],
+    active: 1,
+  };
   rooms.set(code, room);
   ws.subscribe(topicForRoom(code));
 
   ws.data.clientId = msg.clientId;
   ws.data.room = code;
+  ws.data.index = 0;
 
   incrementStat(origin, "rooms");
-  send(ws, { type: "created", room: code, instance: INSTANCE_ID, region: REGION });
+  send(ws, { type: "created", room: code, instance: INSTANCE_ID, region: REGION, index: 0 });
 }
 
 function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; room: string }) {
@@ -322,39 +347,64 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
     return send(ws, { type: "error", message: "Room not found" });
   }
 
-  const existingWs = room.clients.get(msg.clientId);
-  if (existingWs) {
-    // Reconnect: detach and close the old connection before swapping in the new one
-    existingWs.data.room = undefined;
-    existingWs.data.clientId = undefined;
-    existingWs.close(4000, "replaced");
-    room.clients.set(msg.clientId, ws);
+  // Linear scan over members. clientId never crosses the wire — matching it
+  // is the proof-of-ownership that lets the new ws displace the old one.
+  // O(n) is fine: n is small (party-game lobby sizes).
+  const existingIndex = room.members.findIndex((m) => m?.clientId === msg.clientId);
+  if (existingIndex !== -1) {
+    const existing = room.members[existingIndex]!;
+    const wasActive = existing.ws !== undefined;
+    if (existing.ws) {
+      // Detach the old ws so its close handler doesn't tear down the slot we're
+      // about to hand to the new ws.
+      existing.ws.data.room = undefined;
+      existing.ws.data.clientId = undefined;
+      existing.ws.data.index = undefined;
+      existing.ws.close(4000, "replaced");
+    } else {
+      room.active++;
+    }
+
+    existing.ws = ws;
     ws.subscribe(topicForRoom(msg.room));
     ws.data.clientId = msg.clientId;
     ws.data.room = msg.room;
+    ws.data.index = existingIndex;
 
-    const clients = Array.from(room.clients.keys());
-    send(ws, { type: "joined", room: msg.room, clients });
+    const peers = peerIndices(room, existingIndex);
+    send(ws, { type: "joined", room: msg.room, index: existingIndex, peers });
+    if (!wasActive) broadcast(msg.room, { type: "peer_joined", index: existingIndex }, ws);
     return;
   }
 
-  if (room.clients.size >= room.maxClients) {
+  if (room.members.length >= room.maxClients) {
     return send(ws, { type: "error", message: "Room is full" });
   }
 
-  room.clients.set(msg.clientId, ws);
+  const index = room.members.length;
+  room.members.push({ clientId: msg.clientId, ws });
+  room.active++;
   ws.subscribe(topicForRoom(msg.room));
   ws.data.clientId = msg.clientId;
   ws.data.room = msg.room;
+  ws.data.index = index;
 
-  const clients = Array.from(room.clients.keys());
-  send(ws, { type: "joined", room: msg.room, clients });
-  broadcast(msg.room, { type: "peer_joined", clientId: msg.clientId }, ws);
+  const peers = peerIndices(room, index);
+  send(ws, { type: "joined", room: msg.room, index, peers });
+  broadcast(msg.room, { type: "peer_joined", index }, ws);
 }
 
-function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: unknown }) {
-  const { clientId, room: roomCode } = ws.data;
-  if (!clientId || !roomCode) {
+function peerIndices(room: Room, selfIndex: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < room.members.length; i++) {
+    if (i !== selfIndex && room.members[i]?.ws) out.push(i);
+  }
+  return out;
+}
+
+function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: number; data: unknown }) {
+  const { index, room: roomCode } = ws.data;
+  if (index === undefined || !roomCode) {
     return send(ws, { type: "error", message: "Not in a room" });
   }
 
@@ -363,14 +413,17 @@ function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: u
     return send(ws, { type: "error", message: "Room not found" });
   }
 
-  if (msg.to) {
-    const target = room.clients.get(msg.to);
-    if (!target) {
-      return send(ws, { type: "error", message: "Target client not found" });
+  if (msg.to !== undefined) {
+    if (!Number.isSafeInteger(msg.to) || msg.to < 0) {
+      return send(ws, { type: "error", message: "Target peer not found" });
     }
-    send(target, { type: "message", from: clientId, data: msg.data });
+    const target = room.members[msg.to];
+    if (!target?.ws) {
+      return send(ws, { type: "error", message: "Target peer not found" });
+    }
+    send(target.ws, { type: "message", from: index, data: msg.data });
   } else {
-    broadcast(roomCode, { type: "message", from: clientId, data: msg.data }, ws);
+    broadcast(roomCode, { type: "message", from: index, data: msg.data }, ws);
   }
 }
 
@@ -387,7 +440,7 @@ function getOriginStats(): { roomCount: number; clientCount: number; origins: Ma
   const origins = new Map<string, OriginStats>();
   for (const room of rooms.values()) {
     roomCount++;
-    const clients = room.clients.size;
+    const clients = room.active;
     clientCount += clients;
     const key = room.origin;
     const entry = origins.get(key);
@@ -570,7 +623,7 @@ const server = Bun.serve({
         return new Response(JSON.stringify({ error: "Room not found" }), { status: 404, headers });
       }
       return new Response(JSON.stringify({
-        clients: room.clients.size,
+        clients: room.active,
         maxClients: room.maxClients,
         origin: room.origin,
       }), { headers });
@@ -589,7 +642,7 @@ const server = Bun.serve({
         });
       }
       let clients = 0;
-      for (const room of rooms.values()) clients += room.clients.size;
+      for (const room of rooms.values()) clients += room.active;
       return new Response(`rooms: ${rooms.size}\nclients: ${clients}\n`, {
         headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
