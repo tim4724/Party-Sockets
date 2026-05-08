@@ -62,12 +62,9 @@ Server-generated codes are 6-char base58 (Bitcoin alphabet — no `0`, `O`, `I`,
 
 ```js
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
-
-// Or request a specific room code (e.g. to restore a room after server restart)
-ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "Mu5h6Z" }));
 ```
 
-A custom `room` code is accepted only when (a) it's a valid 6-char base58 string, (b) on Fly, its encoded region matches the receiving machine's region (so the room stays reachable via direct routing), and (c) it isn't already taken. Otherwise the server assigns a fresh code silently.
+The server always picks the room code — clients cannot request one. The code is returned in the `created` response.
 
 ### Join a room
 
@@ -167,7 +164,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be a valid 6-char base58 string and (on Fly) encode the receiving machine's region. |
+| `create` | `clientId`, `maxClients` | Create a new room. The server picks the code. |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 

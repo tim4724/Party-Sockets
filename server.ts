@@ -5,7 +5,7 @@ import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 // --- Types ---
 
 type ClientMessage =
-  | { type: "create"; clientId: string; maxClients: number; room?: string }
+  | { type: "create"; clientId: string; maxClients: number }
   | { type: "join"; clientId: string; room: string }
   | { type: "send"; to?: string; data: unknown };
 
@@ -131,17 +131,6 @@ export function tryDecodeRoomCode(code: string): DecodedCode | null {
   return { region: decodeRegion(regionIdx) };
 }
 
-function tryUseCustomCode(requested: string): string | null {
-  if (typeof requested !== "string" || requested.length !== CODE_LENGTH) return null;
-  const decoded = tryDecodeRoomCode(requested);
-  if (decoded === null) return null;
-  // On Fly, custom code must encode our region or we'd be unreachable via
-  // direct routing. Locally, region check is meaningless — accept any code
-  // that's valid base58.
-  if (REGION_IDX !== null && decoded.region !== REGION) return null;
-  if (rooms.has(requested)) return null;
-  return requested;
-}
 
 // --- Peer discovery ---
 // Manual room-code entry has no ?instance= to pin against. Use Fly's internal
@@ -330,7 +319,7 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
 
 // --- Message handlers ---
 
-function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number; room?: string }) {
+function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number }) {
   if (draining) {
     return send(ws, { type: "error", message: "Server draining" });
   }
@@ -344,10 +333,7 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
     return send(ws, { type: "error", message: "maxClients must be a positive number" });
   }
 
-  // Custom code accepted only if its format is valid AND (when running on Fly)
-  // its encoded region matches ours. Anything else falls back to a generated
-  // code so the holder is always reachable via direct region routing.
-  const code = (msg.room && tryUseCustomCode(msg.room)) ?? generateRoomCode();
+  const code = generateRoomCode();
   const origin = ws.data.origin || "unknown";
   const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);

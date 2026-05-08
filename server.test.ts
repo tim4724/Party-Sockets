@@ -110,44 +110,15 @@ describe("room creation", () => {
     expect(msg.message).toContain("Already in a room");
   });
 
-  test("creates a room with preferred room code", async () => {
+  test("ignores client-supplied room field", async () => {
+    // Custom codes were removed: any room field on create is silently ignored
+    // and the server always picks its own.
     const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ABCDEF" });
-    const msg = await waitForType(ws, "created");
-
-    expect(msg.room).toBe("ABCDEF");
-  });
-
-  test("ignores invalid preferred room code", async () => {
-    const ws = track(await connect());
-    // "ab" is too short and "0" is not in base58 alphabet — both rejected.
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ab" });
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "Mu5h6Z" } as any);
     const msg = await waitForType(ws, "created");
 
     expect(msg.room).toHaveLength(6);
-    expect(msg.room).not.toBe("ab");
-  });
-
-  test("rejects preferred room code with chars outside base58 alphabet", async () => {
-    const ws = track(await connect());
-    // "0" is excluded from base58. Should fall back to a generated code.
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "0OIl00" });
-    const msg = await waitForType(ws, "created");
-
-    expect(msg.room).toHaveLength(6);
-    expect(msg.room).not.toBe("0OIl00");
-  });
-
-  test("generates new code when preferred room is taken", async () => {
-    const ws1 = track(await connect());
-    sendMsg(ws1, { type: "create", clientId: "aaa", maxClients: 4, room: "XYZWab" });
-    const msg1 = await waitForType(ws1, "created");
-    expect(msg1.room).toBe("XYZWab");
-
-    const ws2 = track(await connect());
-    sendMsg(ws2, { type: "create", clientId: "bbb", maxClients: 4, room: "XYZWab" });
-    const msg2 = await waitForType(ws2, "created");
-    expect(msg2.room).not.toBe("XYZWab");
+    expect(msg.room).not.toBe("Mu5h6Z");
   });
 });
 
@@ -443,10 +414,10 @@ describe("room info endpoint", () => {
 
   test("returns room info for existing room", async () => {
     const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 8, room: "Bar456" });
-    await waitForType(ws, "created");
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 8 });
+    const created = await waitForType(ws, "created");
 
-    const res = await fetch(`${HTTP_URL}/room/Bar456`);
+    const res = await fetch(`${HTTP_URL}/room/${created.room}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
@@ -463,7 +434,7 @@ describe("stats endpoint", () => {
 
   test("returns instance metadata and live counts", async () => {
     const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "STATab" });
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
     await waitForType(ws, "created");
 
     const res = await fetch(`${HTTP_URL}/stats`);
