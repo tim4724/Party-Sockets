@@ -85,23 +85,30 @@ function formatUptime(ms: number): string {
 
 const CODE_LENGTH = 6;
 const BODY_BITS = 30;
-const BODY_MASK = (1 << BODY_BITS) - 1;
+const TOTAL_BITS = BODY_BITS + REGION_BITS;
+const MAX_CODE_VALUE = Math.pow(2, TOTAL_BITS) - 1;
 const REGION_IDX = REGION ? encodeRegion(REGION) : null;
-const TOTAL_BITS = REGION_IDX !== null ? BODY_BITS + REGION_BITS : 35;
 
 function randomBits(bits: number): number {
+  // BigInt avoids the float-precision loss we'd hit combining two 32-bit
+  // words into a >32-bit Number. Result fits Number for bits <= 53.
   const buf = new Uint32Array(2);
   crypto.getRandomValues(buf);
-  // Combine two 32-bit words into a 53-bit-safe integer, then mask.
-  const combined = buf[0] * 0x100000000 + buf[1];
-  return Math.floor(combined % Math.pow(2, bits));
+  const combined = (BigInt(buf[0]) << 32n) | BigInt(buf[1]);
+  return Number(combined & ((1n << BigInt(bits)) - 1n));
+}
+
+// Multiplication, not <<. JS bitwise ops coerce to int32, so any region
+// index >= 2 with BODY_BITS = 30 would shift into the sign bit and
+// silently produce a negative value.
+export function packRoomCodeValue(regionIdx: number | null, body: number): number {
+  return regionIdx !== null ? regionIdx * Math.pow(2, BODY_BITS) + body : body;
 }
 
 function generateRoomCode(): string {
   for (let attempt = 0; attempt < 10; attempt++) {
-    const value = REGION_IDX !== null
-      ? (REGION_IDX << BODY_BITS) | randomBits(BODY_BITS)
-      : randomBits(TOTAL_BITS);
+    const body = randomBits(REGION_IDX !== null ? BODY_BITS : TOTAL_BITS);
+    const value = packRoomCodeValue(REGION_IDX, body);
     const code = base58.encode(value, CODE_LENGTH);
     if (!rooms.has(code)) return code;
   }
@@ -119,7 +126,7 @@ export function tryDecodeRoomCode(code: string): DecodedCode | null {
   if (code.length !== CODE_LENGTH) return null;
   const value = base58.decode(code);
   if (value === null) return null;
-  if (value < 0 || value >= Math.pow(2, 35)) return null;
+  if (value < 0 || value > MAX_CODE_VALUE) return null;
   const regionIdx = Math.floor(value / Math.pow(2, BODY_BITS));
   return { region: decodeRegion(regionIdx) };
 }

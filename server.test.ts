@@ -9,7 +9,7 @@ mock.module("node:dns/promises", () => ({
   },
 }));
 
-import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode } from "./server";
+import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, packRoomCodeValue } from "./server";
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGION_TO_IDX } from "./regions";
 
@@ -761,5 +761,20 @@ describe("room code decoder", () => {
   test("rejects codes whose decoded value exceeds 35 bits", () => {
     // 58^6 - 1 fits 6 chars but exceeds 2^35.
     expect(tryDecodeRoomCode("zzzzzz")).toBeNull();
+  });
+
+  test("packed region values round-trip correctly for every known region", () => {
+    // JS bitwise operators coerce to int32; any region index >= 2 with
+    // BODY_BITS = 30 would shift into the sign bit if << were used. Verify
+    // packRoomCodeValue produces a positive value that decodes back to the
+    // intended region for every entry in the table.
+    for (const [region, idx] of Object.entries(REGION_TO_IDX)) {
+      for (const body of [0, 1, 0x3FFFFFFF, 0x12345678]) {
+        const value = packRoomCodeValue(idx, body);
+        expect(value).toBeGreaterThanOrEqual(0);
+        const code = base58.encode(value, 6);
+        expect(tryDecodeRoomCode(code)).toEqual({ region });
+      }
+    }
   });
 });
