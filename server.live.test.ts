@@ -51,50 +51,53 @@ afterEach(() => {
   sockets = [];
 });
 
-// Deterministic machine list. Prefer LIVE_INSTANCES (comma-separated IDs);
-// otherwise shell out to flyctl. Returns [] if neither yields a result —
-// multi-machine tests then self-skip.
+// Deterministic machine list. Cached so multiple tests in one run don't each
+// re-shell out to flyctl. Returns [] when neither env override nor flyctl
+// yields a result — multi-machine tests then self-skip.
 const FLY_APP = process.env.FLY_APP_NAME ?? "party-sockets";
 
-interface Machine { id: string; region: string }
+interface Machine { id: string; region: string; state: string }
 
-// All deployed machines (any state). Cross-region replay tests want every
-// region — Fly auto-wakes suspended/stopped targets when fly-force-instance-id
-// pins to them, so state filtering would shrink the matrix unnecessarily.
+let machineCache: Machine[] | null = null;
+
+// All deployed machines (any non-destroyed state). Cross-region replay tests
+// want every region — Fly auto-wakes suspended/stopped targets when
+// fly-force-instance-id pins to them, so state filtering would shrink the
+// matrix unnecessarily.
 function getMachineList(): Machine[] {
+  if (machineCache) return machineCache;
   if (process.env.LIVE_MACHINES) {
-    // "id1:region1,id2:region2" — region carried alongside id.
-    return process.env.LIVE_MACHINES.split(",").map((s) => {
+    // "id1:region1,id2:region2" — region carried alongside id; state assumed
+    // started (caller owns the override).
+    machineCache = process.env.LIVE_MACHINES.split(",").map((s) => {
       const [id, region = ""] = s.trim().split(":");
-      return { id, region };
+      return { id, region, state: "started" };
     }).filter((m) => m.id);
+    return machineCache;
+  }
+  if (process.env.LIVE_INSTANCES) {
+    // Backward-compat: ID-only list, no region info.
+    machineCache = process.env.LIVE_INSTANCES.split(",")
+      .map((s) => ({ id: s.trim(), region: "", state: "started" }))
+      .filter((m) => m.id);
+    return machineCache;
   }
   try {
     const proc = Bun.spawnSync(["fly", "machines", "list", "--json", "--app", FLY_APP]);
-    if (proc.exitCode !== 0) return [];
+    if (proc.exitCode !== 0) { machineCache = []; return machineCache; }
     const data = JSON.parse(proc.stdout.toString());
-    return data
+    machineCache = data
       .filter((m: any) => m.state !== "destroyed")
-      .map((m: any) => ({ id: m.id as string, region: m.region as string }));
+      .map((m: any) => ({ id: m.id as string, region: m.region as string, state: m.state as string }));
+    return machineCache!;
   } catch {
-    return [];
+    machineCache = [];
+    return machineCache;
   }
 }
 
 function getInstanceIds(): string[] {
-  if (process.env.LIVE_INSTANCES) {
-    return process.env.LIVE_INSTANCES.split(",").map((s) => s.trim()).filter(Boolean);
-  }
-  try {
-    const proc = Bun.spawnSync(["fly", "machines", "list", "--json", "--app", FLY_APP]);
-    if (proc.exitCode !== 0) return [];
-    const data = JSON.parse(proc.stdout.toString());
-    return data
-      .filter((m: any) => m.state === "started")
-      .map((m: any) => m.id as string);
-  } catch {
-    return [];
-  }
+  return getMachineList().filter((m) => m.state === "started").map((m) => m.id);
 }
 
 describe.skipIf(!LIVE)("live", () => {
@@ -225,6 +228,11 @@ describe.skipIf(!LIVE)("live", () => {
       headers: { "fly-force-instance-id": other.id },
     });
     expect(res.status).toBe(200);
+    // X-Instance-Id is echoed by /room/<code>; equality with host.id proves
+    // the request was answered in region A — i.e. fly-force-instance-id put
+    // us on B and B emitted `fly-replay region=A`. Without that, the test
+    // could pass for the wrong reason (fly silently dropping the header).
+    expect(res.headers.get("x-instance-id")).toBe(host.id);
     const body = await res.json();
     expect(body.clients).toBe(1);
   }, 30000);

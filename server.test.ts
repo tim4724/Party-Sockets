@@ -16,6 +16,7 @@ mock.module("node:dns/promises", () => ({
 // text snapshot.
 process.env.FLY_REGION = "fra";
 process.env.FLY_APP_NAME = "test-app";
+process.env.FLY_MACHINE_ID = "test-machine";
 const { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, findRoomOnPeers } = await import("./server");
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGIONS } from "./regions";
@@ -436,6 +437,9 @@ describe("room info endpoint", () => {
 
     const res = await fetch(`${HTTP_URL}/room/${created.room}`);
     expect(res.status).toBe(200);
+    // X-Instance-Id is consumed by the live cross-region replay test to
+    // confirm which machine actually served the response.
+    expect(res.headers.get("x-instance-id")).toBe("test-machine");
     const body = await res.json();
     expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
   });
