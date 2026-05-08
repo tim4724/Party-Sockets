@@ -1,4 +1,5 @@
 import type { ServerWebSocket } from "bun";
+import * as dns from "node:dns/promises";
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 
@@ -53,6 +54,12 @@ const PEER_PROBE_TIMEOUT_MS = 3000;
 // of "are we capping?" stays.
 const MAX_ORIGIN_SERIES = 100;
 
+// Storage cap for originCounters. Without this, a scanner cycling unique
+// Origin headers leaks ~50 bytes per request indefinitely. Sized larger
+// than MAX_ORIGIN_SERIES so the overflow `__other__` bucket still has
+// signal beyond the visible window. Eviction is LRU on increment.
+const MAX_ORIGIN_COUNTERS = 500;
+
 // --- State ---
 
 const rooms = new Map<string, Room>();
@@ -72,9 +79,21 @@ interface OriginCounters {
 const originCounters = new Map<string, OriginCounters>();
 
 function incrementStat(origin: string, field: keyof OriginCounters) {
+  // Re-insert on touch so Map iteration order is LRU: the oldest entry
+  // (front of the map) is the next eviction candidate, and busy origins
+  // keep getting moved to the back.
   let entry = originCounters.get(origin);
-  if (!entry) { entry = { connections: 0, rooms: 0 }; originCounters.set(origin, entry); }
+  if (entry) {
+    originCounters.delete(origin);
+  } else {
+    if (originCounters.size >= MAX_ORIGIN_COUNTERS) {
+      const oldest = originCounters.keys().next().value;
+      if (oldest !== undefined) originCounters.delete(oldest);
+    }
+    entry = { connections: 0, rooms: 0 };
+  }
   entry[field]++;
+  originCounters.set(origin, entry);
 }
 
 // --- Room code generation ---
@@ -149,7 +168,6 @@ async function getPeers(): Promise<Peer[]> {
   // need a snapshot (e.g. DASHBOARD_URL).
   const app = process.env.FLY_APP_NAME ?? "";
   if (!app) return [];
-  const dns = await import("node:dns/promises");
   try {
     const records = await dns.resolveTxt(`vms.${app}.internal`);
     return records.flat().join("")
@@ -171,18 +189,31 @@ export async function findRoomOnPeers(code: string, region: string): Promise<str
   const app = process.env.FLY_APP_NAME ?? "";
   if (!app || !region) return null;
   const peers = (await getPeers()).filter((p) => p.region === region);
+  if (peers.length === 0) return null;
+
+  // Resolve on the first peer that claims the room and abort the rest.
+  // Promise.any rejects only if every probe rejects, so we throw on miss
+  // (404 / network error / per-probe timeout) to keep the contract.
+  const controller = new AbortController();
   const probes = peers.map(async ({ id }) => {
-    try {
-      const res = await fetch(
-        `http://${id}.vm.${app}.internal:${PORT}/room/${encodeURIComponent(code)}`,
-        { signal: AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS) },
-      );
-      return res.ok ? id : null;
-    } catch {
-      return null;
-    }
+    const signal = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS),
+    ]);
+    const res = await fetch(
+      `http://${id}.vm.${app}.internal:${PORT}/room/${encodeURIComponent(code)}`,
+      { signal },
+    );
+    if (!res.ok) throw new Error("miss");
+    return id;
   });
-  return (await Promise.all(probes)).find((x) => x) ?? null;
+  try {
+    const winner = await Promise.any(probes);
+    controller.abort();
+    return winner;
+  } catch {
+    return null;
+  }
 }
 
 function flyReplayToInstance(id: string): Response {
@@ -210,13 +241,19 @@ function send(ws: ServerWebSocket<ClientData>, msg: ServerMessage) {
   ws.send(JSON.stringify(msg));
 }
 
-function broadcast(room: Room, msg: ServerMessage, exclude?: string) {
+// Bun pub/sub: ws.publish broadcasts to all topic subscribers except the
+// caller, server.publish to all of them. We push the fanout into the uWS
+// layer so we don't iterate clients in JS for every message — meaningful
+// at room sizes where multiple peers exchange real-time state.
+function topicForRoom(code: string): string {
+  return `room:${code}`;
+}
+
+function broadcast(code: string, msg: ServerMessage, fromWs?: ServerWebSocket<ClientData>) {
   const payload = JSON.stringify(msg);
-  for (const [id, client] of room.clients) {
-    if (id !== exclude) {
-      client.send(payload);
-    }
-  }
+  const topic = topicForRoom(code);
+  if (fromWs) fromWs.publish(topic, payload);
+  else server.publish(topic, payload);
 }
 
 function removeFromRoom(ws: ServerWebSocket<ClientData>) {
@@ -229,7 +266,9 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
   // Only remove if this ws is still the active connection for this clientId
   if (room.clients.get(clientId) === ws) {
     room.clients.delete(clientId);
-    broadcast(room, { type: "peer_left", clientId });
+    // Closing ws is auto-unsubscribed by Bun, so server.publish naturally
+    // skips it. No explicit unsubscribe needed.
+    broadcast(roomCode, { type: "peer_left", clientId });
 
     if (room.clients.size === 0) {
       rooms.delete(roomCode);
@@ -258,6 +297,7 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);
   rooms.set(code, room);
+  ws.subscribe(topicForRoom(code));
 
   ws.data.clientId = msg.clientId;
   ws.data.room = code;
@@ -289,6 +329,7 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
     existingWs.data.clientId = undefined;
     existingWs.close(4000, "replaced");
     room.clients.set(msg.clientId, ws);
+    ws.subscribe(topicForRoom(msg.room));
     ws.data.clientId = msg.clientId;
     ws.data.room = msg.room;
 
@@ -302,12 +343,13 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
   }
 
   room.clients.set(msg.clientId, ws);
+  ws.subscribe(topicForRoom(msg.room));
   ws.data.clientId = msg.clientId;
   ws.data.room = msg.room;
 
   const clients = Array.from(room.clients.keys());
   send(ws, { type: "joined", room: msg.room, clients });
-  broadcast(room, { type: "peer_joined", clientId: msg.clientId }, msg.clientId);
+  broadcast(msg.room, { type: "peer_joined", clientId: msg.clientId }, ws);
 }
 
 function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: unknown }) {
@@ -328,7 +370,7 @@ function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: u
     }
     send(target, { type: "message", from: clientId, data: msg.data });
   } else {
-    broadcast(room, { type: "message", from: clientId, data: msg.data }, clientId);
+    broadcast(roomCode, { type: "message", from: clientId, data: msg.data }, ws);
   }
 }
 
