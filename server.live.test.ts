@@ -172,7 +172,7 @@ describe.skipIf(!LIVE)("live", () => {
     expect(joined.clients).toContain(guestId);
   });
 
-  test("/room/<code> works without ?instance= for new-format codes", async () => {
+  test("/room/<code> works without ?instance=", async () => {
     const ids = getInstanceIds();
     if (ids.length < 2) {
       console.log("[live] single-machine deploy — skipping cross-machine /room assertion");

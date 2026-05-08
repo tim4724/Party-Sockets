@@ -9,9 +9,22 @@ mock.module("node:dns/promises", () => ({
   },
 }));
 
-import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, packRoomCodeValue, findRoomOnPeers } from "./server";
+// Pin REGION before the server module loads — REGION_IDX is captured as a
+// const at module load, so without this the candidate-code routing block
+// short-circuits on REGION_IDX === null and the peer-probe tests can't fire.
+// Top-level await + dynamic import lets us mutate env first.
+process.env.FLY_REGION = "fra";
+const { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, findRoomOnPeers } = await import("./server");
 import * as base58 from "./base58";
-import { encodeRegion, decodeRegion, REGION_TO_IDX } from "./regions";
+import { encodeRegion, decodeRegion, REGIONS } from "./regions";
+
+// Build a code with a specific region by setting the top 5 bits of the
+// 35-bit value. Used by routing tests that need a same-region code to
+// trigger the peer probe.
+function codeForRegion(region: string, body = 0): string {
+  const idx = encodeRegion(region)!;
+  return base58.encode(idx * Math.pow(2, 30) + body, 6);
+}
 
 const URL = `ws://localhost:${server.port}`;
 
@@ -406,7 +419,9 @@ describe("room info endpoint", () => {
   const HTTP_URL = `http://localhost:${server.port}`;
 
   test("returns 404 for unknown room", async () => {
-    const res = await fetch(`${HTTP_URL}/room/Foo123`);
+    // Use a same-region (fra) code so candidate-code routing doesn't replay
+    // before we reach the local 404 handler.
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 100)}`);
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toContain("not found");
@@ -424,7 +439,7 @@ describe("room info endpoint", () => {
   });
 
   test("sets permissive CORS header", async () => {
-    const res = await fetch(`${HTTP_URL}/room/Baz789`);
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 200)}`);
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
@@ -513,10 +528,13 @@ describe("instance routing", () => {
   });
 
   test("/<code> for unknown room falls through when no peers are discoverable", async () => {
-    // FLY_APP_NAME is unset in tests, so findRoomOnPeers short-circuits.
-    // A WS upgrade to /ZZZZ should complete; the join failure surfaces as the
-    // usual "Room not found" via the join message, not a connection error.
-    const res = await fetch(`http://localhost:${server.port}/ZZZZ`);
+    // Same-region 6-char code: enters the routing block, hits the same-region
+    // peer probe. FLY_APP_NAME is unset in this describe, so findRoomOnPeers
+    // returns null without probing. A WS upgrade to /<code> should complete;
+    // the join failure surfaces as the usual "Room not found" via the join
+    // message, not a connection error.
+    const code = codeForRegion("fra", 42);
+    const res = await fetch(`http://localhost:${server.port}/${code}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
@@ -528,13 +546,13 @@ describe("instance routing", () => {
     expect(res.headers.get("fly-replay")).toBe("instance=other;timeout=5s;fallback=force_self");
   });
 
-  test("/<lowercase> doesn't trigger probe", async () => {
-    const res = await fetch(`http://localhost:${server.port}/abcd`);
+  test("/<too-short> doesn't trigger probe", async () => {
+    const res = await fetch(`http://localhost:${server.port}/AB`);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
-  test("/<too-short> doesn't trigger probe", async () => {
-    const res = await fetch(`http://localhost:${server.port}/AB`);
+  test("/<too-long> doesn't trigger probe", async () => {
+    const res = await fetch(`http://localhost:${server.port}/ABCDEFG`);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 });
@@ -552,22 +570,11 @@ describe("peer probe", () => {
     origFetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init?: any) => {
       const u = typeof url === "string" ? url : url.toString();
-      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:\d+(\/[^?]*)/);
+      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:\d+\//);
       if (m) {
         const id = m[1];
-        const path = m[2];
         const status = peerStatus.get(id) ?? 404;
-        if (status !== 200) return new Response("not found", { status });
-        if (path === "/stats") {
-          return Response.json({
-            instance: id,
-            region: id === "abc123" ? "fra" : "iad",
-            uptimeMs: 60_000,
-            rooms: 2,
-            clients: 5,
-          });
-        }
-        return new Response("{}", { status });
+        return new Response(status === 200 ? "{}" : "not found", { status });
       }
       return origFetch(url, init);
     }) as typeof globalThis.fetch;
@@ -582,13 +589,25 @@ describe("peer probe", () => {
     peerStatus.clear();
   });
 
-  test("fly-replays to the peer that holds the room", async () => {
-    peerStatus.set("def456", 200); // iad has it
-    peerStatus.set("abc123", 404); // fra doesn't
+  test("fly-replays to the same-region peer that holds the room", async () => {
+    // We're in fra (FLY_REGION pinned at top). A code minted for fra should
+    // route to a sibling fra machine — we never probe iad for a fra code.
+    peerStatus.set("abc123", 200); // fra has it
+    peerStatus.set("def456", 200); // iad would also "have" it, but isn't probed
 
-    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
+    const code = codeForRegion("fra", 1);
+    const res = await origFetch(`http://localhost:${server.port}/${code}`);
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("instance=def456;timeout=5s;fallback=force_self");
+    expect(res.headers.get("fly-replay")).toBe("instance=abc123;timeout=5s;fallback=force_self");
+  });
+
+  test("fly-replays to the home region for a cross-region code", async () => {
+    // Code minted for iad arriving here in fra: short-circuit to region replay
+    // without any peer probe.
+    const code = codeForRegion("iad", 1);
+    const res = await origFetch(`http://localhost:${server.port}/${code}`);
+    expect(res.status).toBe(409);
+    expect(res.headers.get("fly-replay")).toBe("region=iad;timeout=5s;fallback=force_self");
   });
 
   test("?instance=<any> emits fly-replay (Fly handles wake / fallback)", async () => {
@@ -643,8 +662,9 @@ describe("peer probe", () => {
     peerStatus.set("abc123", 404);
     peerStatus.set("def456", 404);
 
-    const res = await origFetch(`http://localhost:${server.port}/A3KX`, { redirect: "manual" });
-    // Browser GET on /A3KX (non-WS) hits the catch-all redirect.
+    const code = codeForRegion("fra", 2);
+    const res = await origFetch(`http://localhost:${server.port}/${code}`, { redirect: "manual" });
+    // Browser GET on /<code> (non-WS) hits the catch-all redirect.
     expect(res.status).toBe(302);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
@@ -672,12 +692,13 @@ describe("peer probe", () => {
   });
 
   test("skips probe and redirects when local room exists", async () => {
-    rooms.set("A3KX", { maxClients: 4, origin: "test", clients: new Map() });
+    const code = codeForRegion("fra", 3);
+    rooms.set(code, { maxClients: 4, origin: "test", clients: new Map() });
     // Make a peer claim to also have the room — if the probe ran, we'd
     // emit fly-replay to that peer. Local hit must short-circuit before
     // we ever ask the network.
-    peerStatus.set("def456", 200);
-    const res = await origFetch(`http://localhost:${server.port}/A3KX`, { redirect: "manual" });
+    peerStatus.set("abc123", 200);
+    const res = await origFetch(`http://localhost:${server.port}/${code}`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
@@ -696,12 +717,14 @@ describe("peer probe", () => {
     expect(result).toBeNull();
   });
 
-  test("findRoomOnPeers probes everywhere when region is empty", async () => {
-    peerStatus.set("abc123", 404);
+  test("findRoomOnPeers short-circuits to null when region is empty", async () => {
+    // No region = no probe. All codes carry their home region in the top 5
+    // bits, so callers always pass one — empty input here would mean a bug.
+    peerStatus.set("abc123", 200);
     peerStatus.set("def456", 200);
 
     const result = await findRoomOnPeers("anycode", "");
-    expect(result).toBe("def456");
+    expect(result).toBeNull();
   });
 });
 
@@ -736,10 +759,10 @@ describe("base58 codec", () => {
 
 describe("regions table", () => {
   test("encode/decode roundtrip for all known regions", () => {
-    for (const [region, idx] of Object.entries(REGION_TO_IDX)) {
+    REGIONS.forEach((region, idx) => {
       expect(encodeRegion(region)).toBe(idx);
       expect(decodeRegion(idx)).toBe(region);
-    }
+    });
   });
 
   test("unknown region returns null", () => {
@@ -749,23 +772,16 @@ describe("regions table", () => {
 });
 
 describe("room code decoder", () => {
-  // Build a code with a specific region by setting the top 5 bits of the
-  // 35-bit value, leaving body bits zero.
-  function codeForRegion(region: string): string {
-    const idx = encodeRegion(region)!;
-    return base58.encode(idx * Math.pow(2, 30), 6);
-  }
-
   test("decodes region from a code minted with a known region", () => {
-    expect(tryDecodeRoomCode(codeForRegion("fra"))).toEqual({ region: "fra" });
-    expect(tryDecodeRoomCode(codeForRegion("nrt"))).toEqual({ region: "nrt" });
-    expect(tryDecodeRoomCode(codeForRegion("sin"))).toEqual({ region: "sin" });
+    expect(tryDecodeRoomCode(codeForRegion("fra"))).toBe("fra");
+    expect(tryDecodeRoomCode(codeForRegion("nrt"))).toBe("nrt");
+    expect(tryDecodeRoomCode(codeForRegion("sin"))).toBe("sin");
   });
 
-  test("returns region: null when top bits map to unassigned slot", () => {
+  test("returns null when top bits map to unassigned slot", () => {
     // Index 31 (top of 5-bit space) is unassigned in our table.
     const code = base58.encode(31 * Math.pow(2, 30), 6);
-    expect(tryDecodeRoomCode(code)).toEqual({ region: null });
+    expect(tryDecodeRoomCode(code)).toBeNull();
   });
 
   test("rejects non-6-char input", () => {
@@ -784,17 +800,17 @@ describe("room code decoder", () => {
   });
 
   test("packed region values round-trip correctly for every known region", () => {
-    // JS bitwise operators coerce to int32; any region index >= 2 with
-    // BODY_BITS = 30 would shift into the sign bit if << were used. Verify
-    // packRoomCodeValue produces a positive value that decodes back to the
-    // intended region for every entry in the table.
-    for (const [region, idx] of Object.entries(REGION_TO_IDX)) {
+    // Multiplication, not <<. JS bitwise operators coerce to int32; any
+    // region index >= 2 with BODY_BITS = 30 would shift into the sign bit
+    // if << were used. Verify the packing produces a positive value that
+    // decodes back to the intended region for every entry in the table.
+    REGIONS.forEach((region, idx) => {
       for (const body of [0, 1, 0x3FFFFFFF, 0x12345678]) {
-        const value = packRoomCodeValue(idx, body);
+        const value = idx * Math.pow(2, 30) + body;
         expect(value).toBeGreaterThanOrEqual(0);
         const code = base58.encode(value, 6);
-        expect(tryDecodeRoomCode(code)).toEqual({ region });
+        expect(tryDecodeRoomCode(code)).toBe(region);
       }
-    }
+    });
   });
 });
