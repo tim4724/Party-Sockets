@@ -97,7 +97,11 @@ function getMachineList(): Machine[] {
 }
 
 function getInstanceIds(): string[] {
-  return getMachineList().filter((m) => m.state === "started").map((m) => m.id);
+  // Match getMachineList's policy: every non-destroyed machine. Fly auto-wakes
+  // stopped/suspended targets when ?instance= pins to them, and a started-only
+  // filter raced with deploy bounces and silently skipped multi-machine
+  // assertions.
+  return getMachineList().map((m) => m.id);
 }
 
 describe.skipIf(!LIVE)("live", () => {
