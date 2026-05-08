@@ -644,6 +644,27 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
+  test("/health is not treated as a room code (no peer probe)", async () => {
+    // Reproducer for the prod incident where /health matched the
+    // 4-8 char path regex and triggered a cross-region peer probe.
+    // peerStatus is empty — if the probe ran, both peers would respond
+    // with 404. We assert /health responds quickly with the health JSON.
+    const start = Date.now();
+    const res = await origFetch(`http://localhost:${server.port}/health`);
+    const ms = Date.now() - start;
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: "ok" });
+    // Sanity: should be much faster than even a single probe timeout (3s).
+    expect(ms).toBeLessThan(500);
+  });
+
+  test("/stats is not treated as a room code", async () => {
+    const res = await origFetch(`http://localhost:${server.port}/stats`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body).toHaveProperty("instance");
+  });
+
   test("skips probe and serves locally when room is on this machine", async () => {
     rooms.set("A3KX", { maxClients: 4, origin: "test", clients: new Map() });
     // No peerStatus entries — if the probe ran, both peers would 404 and we'd

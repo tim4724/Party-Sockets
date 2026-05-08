@@ -1123,11 +1123,15 @@ const server = Bun.serve({
     }
     // Pull a candidate room code out of either /<code> (WS upgrade) or
     // /room/<code> (HTTP existence check). Either path participates in
-    // routing.
+    // routing. Well-known endpoint names that happen to fit the 4-8 char
+    // alpha-num shape (/health, /stats, etc.) must be excluded — otherwise
+    // they trigger a cross-region peer probe before reaching their handler.
+    const RESERVED_PATHS = new Set(["health", "stats", "favicon"]);
     let candidateCode: string | null = null;
     const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{4,8})$/);
-    if (pathRoomMatch) candidateCode = pathRoomMatch[1];
-    else {
+    if (pathRoomMatch && !RESERVED_PATHS.has(pathRoomMatch[1])) {
+      candidateCode = pathRoomMatch[1];
+    } else {
       const apiRoomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
       if (apiRoomMatch) candidateCode = decodeURIComponent(apiRoomMatch[1]);
     }
