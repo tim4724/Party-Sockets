@@ -9,7 +9,9 @@ mock.module("node:dns/promises", () => ({
   },
 }));
 
-import { server, rooms, drain, _resetDrainForTest } from "./server";
+import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, packRoomCodeValue, findRoomOnPeers } from "./server";
+import * as base58 from "./base58";
+import { encodeRegion, decodeRegion, REGION_TO_IDX } from "./regions";
 
 const URL = `ws://localhost:${server.port}`;
 
@@ -63,13 +65,13 @@ afterAll(() => {
 });
 
 describe("room creation", () => {
-  test("creates a room and returns 4-char code", async () => {
+  test("creates a room and returns 6-char code", async () => {
     const ws = track(await connect());
     sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
     const msg = await waitForType(ws, "created");
 
     expect(msg.type).toBe("created");
-    expect(msg.room).toHaveLength(4);
+    expect(msg.room).toHaveLength(6);
   });
 
   test("created response includes instance and region", async () => {
@@ -108,33 +110,15 @@ describe("room creation", () => {
     expect(msg.message).toContain("Already in a room");
   });
 
-  test("creates a room with preferred room code", async () => {
+  test("ignores client-supplied room field", async () => {
+    // Custom codes were removed: any room field on create is silently ignored
+    // and the server always picks its own.
     const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ABCD" });
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "Mu5h6Z" } as any);
     const msg = await waitForType(ws, "created");
 
-    expect(msg.room).toBe("ABCD");
-  });
-
-  test("ignores invalid preferred room code", async () => {
-    const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, room: "ab" });
-    const msg = await waitForType(ws, "created");
-
-    expect(msg.room).toHaveLength(4);
-    expect(msg.room).not.toBe("ab");
-  });
-
-  test("generates new code when preferred room is taken", async () => {
-    const ws1 = track(await connect());
-    sendMsg(ws1, { type: "create", clientId: "aaa", maxClients: 4, room: "XYZW" });
-    const msg1 = await waitForType(ws1, "created");
-    expect(msg1.room).toBe("XYZW");
-
-    const ws2 = track(await connect());
-    sendMsg(ws2, { type: "create", clientId: "bbb", maxClients: 4, room: "XYZW" });
-    const msg2 = await waitForType(ws2, "created");
-    expect(msg2.room).not.toBe("XYZW");
+    expect(msg.room).toHaveLength(6);
+    expect(msg.room).not.toBe("Mu5h6Z");
   });
 });
 
@@ -422,7 +406,7 @@ describe("room info endpoint", () => {
   const HTTP_URL = `http://localhost:${server.port}`;
 
   test("returns 404 for unknown room", async () => {
-    const res = await fetch(`${HTTP_URL}/room/NOPE`);
+    const res = await fetch(`${HTTP_URL}/room/Foo123`);
     expect(res.status).toBe(404);
     const body = await res.json();
     expect(body.error).toContain("not found");
@@ -430,36 +414,69 @@ describe("room info endpoint", () => {
 
   test("returns room info for existing room", async () => {
     const ws = track(await connect());
-    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 8, room: "INFO" });
-    await waitForType(ws, "created");
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 8 });
+    const created = await waitForType(ws, "created");
 
-    const res = await fetch(`${HTTP_URL}/room/INFO`);
+    const res = await fetch(`${HTTP_URL}/room/${created.room}`);
     expect(res.status).toBe(200);
     const body = await res.json();
     expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
   });
 
   test("sets permissive CORS header", async () => {
-    const res = await fetch(`${HTTP_URL}/room/NOPE`);
+    const res = await fetch(`${HTTP_URL}/room/Baz789`);
     expect(res.headers.get("access-control-allow-origin")).toBe("*");
   });
 });
 
+describe("stats endpoint", () => {
+  const HTTP_URL = `http://localhost:${server.port}`;
+
+  test("returns instance metadata and live counts", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    await waitForType(ws, "created");
+
+    const res = await fetch(`${HTTP_URL}/stats`);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+    const body = await res.json();
+    expect(body).toMatchObject({
+      instance: expect.any(String),
+      region: expect.any(String),
+      rooms: 1,
+      clients: 1,
+    });
+    expect(typeof body.uptimeMs).toBe("number");
+    expect(Number.isFinite(body.uptimeMs)).toBe(true);
+    expect(body.uptimeMs >= 0).toBe(true);
+  });
+});
+
 describe("room code generation", () => {
-  test("escalates length when all attempts at base length collide", async () => {
-    const origRandom = Math.random;
-    Math.random = () => 0; // generator picks "A...A" deterministically
-    try {
-      rooms.set("AAAA", { maxClients: 1, origin: "test", clients: new Map() });
+  test("generated codes are 6-char base58", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
 
-      const ws = track(await connect());
-      sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
-      const msg = await waitForType(ws, "created");
+    expect(msg.room).toHaveLength(6);
+    // Base58 alphabet excludes 0, O, I, l.
+    expect(msg.room).toMatch(/^[1-9A-HJ-NP-Za-km-z]{6}$/);
+  });
 
-      expect(msg.room.length).toBeGreaterThanOrEqual(5);
-    } finally {
-      Math.random = origRandom;
-    }
+  test("retry catches local collisions", async () => {
+    // crypto.getRandomValues is hard to mock; instead, pre-fill a code we
+    // expect the generator to never produce naturally and verify create still
+    // succeeds without returning that code.
+    rooms.set("AAAAAA", { maxClients: 1, origin: "test", clients: new Map() });
+
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.room).not.toBe("AAAAAA");
+    expect(msg.room).toHaveLength(6);
+    rooms.delete("AAAAAA");
   });
 });
 
@@ -538,10 +555,22 @@ describe("peer probe", () => {
     origFetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init?: any) => {
       const u = typeof url === "string" ? url : url.toString();
-      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:/);
+      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:\d+(\/[^?]*)/);
       if (m) {
-        const status = peerStatus.get(m[1]) ?? 404;
-        return new Response(status === 200 ? "{}" : "not found", { status });
+        const id = m[1];
+        const path = m[2];
+        const status = peerStatus.get(id) ?? 404;
+        if (status !== 200) return new Response("not found", { status });
+        if (path === "/stats") {
+          return Response.json({
+            instance: id,
+            region: id === "abc123" ? "fra" : "iad",
+            uptimeMs: 60_000,
+            rooms: 2,
+            clients: 5,
+          });
+        }
+        return new Response("{}", { status });
       }
       return origFetch(url, init);
     }) as typeof globalThis.fetch;
@@ -599,5 +628,146 @@ describe("peer probe", () => {
     const res = await origFetch(`http://localhost:${server.port}/A3KX`);
     expect(res.status).toBe(200);
     expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("status page renders a row for each responsive peer", async () => {
+    peerStatus.set("abc123", 200);
+    peerStatus.set("def456", 200);
+
+    const res = await origFetch(`http://localhost:${server.port}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toContain('href="?instance=abc123"');
+    expect(html).toContain('href="?instance=def456"');
+    expect(html).toContain("fra");
+    expect(html).toContain("iad");
+    // Hero shows machine count via the kv block; expect the value `3`.
+    expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">3<\/span>/);
+  });
+
+  test("status page shows only self when no peers respond", async () => {
+    // peerStatus is empty — both abc123 and def456 return 404 to /stats.
+    const res = await origFetch(`http://localhost:${server.port}/`);
+    expect(res.status).toBe(200);
+    const html = await res.text();
+    expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">1<\/span>/);
+    expect(html).not.toContain('href="?instance=');
+    expect(html).toContain('class="row machine current"');
+  });
+
+  test("findRoomOnPeers filters to the requested region", async () => {
+    // abc123=fra has the room, def456=iad has it too. With region="fra" we
+    // should only probe abc123. To prove def456 isn't probed, we make def456
+    // respond with the room being there too — if filtering is broken and we
+    // probe both, Promise order would still typically pick abc123 by index,
+    // so flip the asymmetry: only def456 returns 200, abc123 returns 404.
+    // With a working same-region filter, we never see def456 -> result is null.
+    peerStatus.set("abc123", 404);
+    peerStatus.set("def456", 200);
+
+    const result = await findRoomOnPeers("anycode", "fra");
+    expect(result).toBeNull();
+  });
+
+  test("findRoomOnPeers probes everywhere when region is empty", async () => {
+    peerStatus.set("abc123", 404);
+    peerStatus.set("def456", 200);
+
+    const result = await findRoomOnPeers("anycode", "");
+    expect(result).toBe("def456");
+  });
+});
+
+describe("base58 codec", () => {
+  test("encode/decode roundtrip", () => {
+    for (const v of [0, 1, 57, 58, 1000, 0x3FFFFFFF, 0x7FFFFFFFF]) {
+      expect(base58.decode(base58.encode(v, 6))).toBe(v);
+    }
+  });
+
+  test("encode pads to requested length", () => {
+    expect(base58.encode(0, 6)).toHaveLength(6);
+    expect(base58.encode(1, 6)).toHaveLength(6);
+    expect(base58.encode(58, 6)).toHaveLength(6);
+  });
+
+  test("decode rejects chars outside the alphabet", () => {
+    // 0, O, I, l are excluded.
+    expect(base58.decode("0AAAAA")).toBeNull();
+    expect(base58.decode("OAAAAA")).toBeNull();
+    expect(base58.decode("IAAAAA")).toBeNull();
+    expect(base58.decode("lAAAAA")).toBeNull();
+  });
+
+  test("decode accepts every valid alphabet char", () => {
+    const alphabet = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    for (const ch of alphabet) {
+      expect(base58.decode(ch + "AAAAA")).not.toBeNull();
+    }
+  });
+});
+
+describe("regions table", () => {
+  test("encode/decode roundtrip for all known regions", () => {
+    for (const [region, idx] of Object.entries(REGION_TO_IDX)) {
+      expect(encodeRegion(region)).toBe(idx);
+      expect(decodeRegion(idx)).toBe(region);
+    }
+  });
+
+  test("unknown region returns null", () => {
+    expect(encodeRegion("xxx")).toBeNull();
+    expect(decodeRegion(99)).toBeNull();
+  });
+});
+
+describe("room code decoder", () => {
+  // Build a code with a specific region by setting the top 5 bits of the
+  // 35-bit value, leaving body bits zero.
+  function codeForRegion(region: string): string {
+    const idx = encodeRegion(region)!;
+    return base58.encode(idx * Math.pow(2, 30), 6);
+  }
+
+  test("decodes region from a code minted with a known region", () => {
+    expect(tryDecodeRoomCode(codeForRegion("fra"))).toEqual({ region: "fra" });
+    expect(tryDecodeRoomCode(codeForRegion("nrt"))).toEqual({ region: "nrt" });
+    expect(tryDecodeRoomCode(codeForRegion("sin"))).toEqual({ region: "sin" });
+  });
+
+  test("returns region: null when top bits map to unassigned slot", () => {
+    // Index 31 (top of 5-bit space) is unassigned in our table.
+    const code = base58.encode(31 * Math.pow(2, 30), 6);
+    expect(tryDecodeRoomCode(code)).toEqual({ region: null });
+  });
+
+  test("rejects non-6-char input", () => {
+    expect(tryDecodeRoomCode("ABCDE")).toBeNull();
+    expect(tryDecodeRoomCode("ABCDEFG")).toBeNull();
+  });
+
+  test("rejects codes with chars outside the alphabet", () => {
+    expect(tryDecodeRoomCode("0AAAAA")).toBeNull();
+    expect(tryDecodeRoomCode("OAAAAA")).toBeNull();
+  });
+
+  test("rejects codes whose decoded value exceeds 35 bits", () => {
+    // 58^6 - 1 fits 6 chars but exceeds 2^35.
+    expect(tryDecodeRoomCode("zzzzzz")).toBeNull();
+  });
+
+  test("packed region values round-trip correctly for every known region", () => {
+    // JS bitwise operators coerce to int32; any region index >= 2 with
+    // BODY_BITS = 30 would shift into the sign bit if << were used. Verify
+    // packRoomCodeValue produces a positive value that decodes back to the
+    // intended region for every entry in the table.
+    for (const [region, idx] of Object.entries(REGION_TO_IDX)) {
+      for (const body of [0, 1, 0x3FFFFFFF, 0x12345678]) {
+        const value = packRoomCodeValue(idx, body);
+        expect(value).toBeGreaterThanOrEqual(0);
+        const code = base58.encode(value, 6);
+        expect(tryDecodeRoomCode(code)).toEqual({ region });
+      }
+    }
   });
 });

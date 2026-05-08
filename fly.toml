@@ -1,6 +1,11 @@
 app = "party-sockets"
 primary_region = "fra"
 
+# Give the relay's drain logic up to 5 min (Fly's max) to let active games
+# finish before forced shutdown. Empty machines stop instantly because drain
+# exits as soon as rooms.size = 0.
+kill_timeout = 300
+
 [build]
 
 [env]
@@ -9,9 +14,26 @@ primary_region = "fra"
 [http_service]
   internal_port = 3000
   force_https = true
-  auto_stop_machines = "stop"
+  auto_stop_machines = "suspend"
   auto_start_machines = true
   min_machines_running = 0
+
+  [http_service.concurrency]
+    type = "connections"
+    soft_limit = 250
+    hard_limit = 2000
+
+  # Gate fly-proxy routing on the app actually being ready. Bun binds port 3000
+  # in ~900ms; 3s grace gives a comfortable margin and avoids the PC01
+  # "instance refused connection" race we saw on cold-start. During the grace
+  # window, fly-proxy routes to the warm sibling instead.
+  [[http_service.checks]]
+    interval     = "10s"
+    timeout      = "2s"
+    grace_period = "3s"
+    method       = "GET"
+    path         = "/health"
+    protocol     = "http"
 
 [[vm]]
   cpu_kind = "shared"
