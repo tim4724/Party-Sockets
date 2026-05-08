@@ -41,7 +41,7 @@ const INSTANCE_ID = process.env.INSTANCE_ID ?? process.env.FLY_MACHINE_ID ?? "";
 const REGION = process.env.REGION ?? process.env.FLY_REGION ?? "";
 const FLY_APP = process.env.FLY_APP_NAME ?? "";
 const DASHBOARD_URL = process.env.DASHBOARD_URL
-  ?? (FLY_APP ? `https://fly-metrics.net/d/fly-app/fly-app?var-app=${encodeURIComponent(FLY_APP)}` : "https://fly-metrics.net/");
+  ?? (FLY_APP ? `https://fly-metrics.net/d/fly-app/fly-app?var-app=${encodeURIComponent(FLY_APP)}` : null);
 // Peer probe (findRoomOnPeers) blocks the user's request when typing a code,
 // but cross-region cold-connections need real headroom. 3s tolerates a single
 // slow sibling without giving up.
@@ -533,13 +533,20 @@ const server = Bun.serve({
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
-      // Anything that isn't an API endpoint or a WS upgrade is treated as a
-      // browser hitting the root for human-friendly observability — redirect
-      // to the Fly Grafana dashboard. DASHBOARD_URL overrides for non-Fly
-      // hosting or a different dashboard.
-      return new Response(null, {
-        status: 302,
-        headers: { Location: DASHBOARD_URL },
+      // Browser hit on root or unknown path. With DASHBOARD_URL set (Fly
+      // default, or explicit override) redirect to Grafana for cluster-wide
+      // metrics. Otherwise fall back to a per-instance text snapshot — this
+      // machine only, since there's no aggregator off-Fly.
+      if (DASHBOARD_URL) {
+        return new Response(null, {
+          status: 302,
+          headers: { Location: DASHBOARD_URL },
+        });
+      }
+      let clients = 0;
+      for (const room of rooms.values()) clients += room.clients.size;
+      return new Response(`rooms: ${rooms.size}\nclients: ${clients}\n`, {
+        headers: { "Content-Type": "text/plain; charset=utf-8" },
       });
     }
   },
