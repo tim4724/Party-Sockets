@@ -165,7 +165,7 @@ async function getPeers(): Promise<Peer[]> {
 
 // Empty `region` means "probe everywhere" — used for legacy codes that
 // don't encode their home region.
-async function findRoomOnPeers(code: string, region: string): Promise<string | null> {
+export async function findRoomOnPeers(code: string, region: string): Promise<string | null> {
   const app = process.env.FLY_APP_NAME ?? "";
   let peers = await getPeers();
   if (region) peers = peers.filter((p) => p.region === region);
@@ -1091,19 +1091,19 @@ const server = Bun.serve({
 console.log(`Party-Sockets running on port ${server.port}`);
 
 // --- Graceful shutdown ---
-// On SIGTERM, refuse new `create` messages so fresh games land on the new pod,
-// then wait for in-progress rooms to empty before exiting. Kubernetes must grant
-// enough terminationGracePeriodSeconds to cover the longest realistic game.
+// On SIGTERM, refuse new `create` messages so fresh games land on the new
+// pod, then wait for in-progress rooms to empty before exiting. The platform
+// owns the upper bound (Fly's kill_timeout sends SIGKILL after that). The
+// `deadlineMs` option exists only so tests can bound their own runs.
 
 const DRAIN_POLL_INTERVAL_MS = 500;
-const DRAIN_DEADLINE_MS = 590_000; // just under a 600s K8s grace period
 
 async function drain(options: { exitOnComplete?: boolean; deadlineMs?: number } = {}): Promise<number> {
   if (draining) return rooms.size;
   draining = true;
-  const deadline = Date.now() + (options.deadlineMs ?? DRAIN_DEADLINE_MS);
+  const deadline = options.deadlineMs !== undefined ? Date.now() + options.deadlineMs : null;
   console.log(`[drain] starting with ${rooms.size} rooms`);
-  while (rooms.size > 0 && Date.now() < deadline) {
+  while (rooms.size > 0 && (deadline === null || Date.now() < deadline)) {
     await new Promise((r) => setTimeout(r, DRAIN_POLL_INTERVAL_MS));
   }
   const remaining = rooms.size;
