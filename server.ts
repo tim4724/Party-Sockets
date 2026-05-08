@@ -517,9 +517,12 @@ const server = Bun.serve({
 
     if (apiRoomMatch && candidateCode) {
       const room = rooms.get(candidateCode);
-      const headers = {
+      // Echo the responding instance so callers can confirm where a request
+      // landed — useful for verifying cross-region replay end-to-end.
+      const headers: Record<string, string> = {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",
+        "X-Instance-Id": INSTANCE_ID,
       };
       if (!room) {
         return new Response(JSON.stringify({ error: "Room not found" }), { status: 404, headers });

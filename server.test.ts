@@ -9,11 +9,14 @@ mock.module("node:dns/promises", () => ({
   },
 }));
 
-// Pin REGION before the server module loads — REGION_IDX is captured as a
-// const at module load, so without this the candidate-code routing block
-// short-circuits on REGION_IDX === null and the peer-probe tests can't fire.
-// Top-level await + dynamic import lets us mutate env first.
+// Pin FLY_REGION + FLY_APP_NAME before the server module loads — REGION_IDX
+// and DASHBOARD_URL are captured as module-level consts, so a beforeAll mutation
+// after import would be too late for both. With FLY_APP_NAME set, DASHBOARD_URL
+// resolves to the fly-metrics URL (catch-all 302) instead of the per-instance
+// text snapshot.
 process.env.FLY_REGION = "fra";
+process.env.FLY_APP_NAME = "test-app";
+process.env.FLY_MACHINE_ID = "test-machine";
 const { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, findRoomOnPeers } = await import("./server");
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGIONS } from "./regions";
@@ -434,6 +437,9 @@ describe("room info endpoint", () => {
 
     const res = await fetch(`${HTTP_URL}/room/${created.room}`);
     expect(res.status).toBe(200);
+    // X-Instance-Id is consumed by the live cross-region replay test to
+    // confirm which machine actually served the response.
+    expect(res.headers.get("x-instance-id")).toBe("test-machine");
     const body = await res.json();
     expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
   });
@@ -527,15 +533,14 @@ describe("instance routing", () => {
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
-  test("/<code> for unknown room falls through when no peers are discoverable", async () => {
+  test("/<code> for unknown room falls through when probes don't find it", async () => {
     // Same-region 6-char code: enters the routing block, hits the same-region
-    // peer probe. FLY_APP_NAME is unset in this describe, so findRoomOnPeers
-    // returns null without probing. A WS upgrade to /<code> should complete;
-    // the join failure surfaces as the usual "Room not found" via the join
-    // message, not a connection error.
+    // peer probe. globalThis.fetch isn't mocked here so the probes hit real
+    // DNS for *.vm.test-app.internal — which doesn't resolve, so probes fail
+    // fast and findRoomOnPeers returns null. The request falls through to the
+    // catch-all (302) with no fly-replay header — that's what we're guarding.
     const code = codeForRegion("fra", 42);
-    const res = await fetch(`http://localhost:${server.port}/${code}`);
-    expect(res.status).toBe(200);
+    const res = await fetch(`http://localhost:${server.port}/${code}`, { redirect: "manual" });
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
@@ -547,12 +552,12 @@ describe("instance routing", () => {
   });
 
   test("/<too-short> doesn't trigger probe", async () => {
-    const res = await fetch(`http://localhost:${server.port}/AB`);
+    const res = await fetch(`http://localhost:${server.port}/AB`, { redirect: "manual" });
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
   test("/<too-long> doesn't trigger probe", async () => {
-    const res = await fetch(`http://localhost:${server.port}/ABCDEFG`);
+    const res = await fetch(`http://localhost:${server.port}/ABCDEFG`, { redirect: "manual" });
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 });
@@ -566,7 +571,6 @@ describe("peer probe", () => {
   const peerStatus = new Map<string, number>();
 
   beforeAll(() => {
-    process.env.FLY_APP_NAME = "test-app";
     origFetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init?: any) => {
       const u = typeof url === "string" ? url : url.toString();
@@ -582,7 +586,6 @@ describe("peer probe", () => {
 
   afterAll(() => {
     globalThis.fetch = origFetch;
-    delete process.env.FLY_APP_NAME;
   });
 
   afterEach(() => {
