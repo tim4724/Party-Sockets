@@ -614,7 +614,7 @@ describe("peer probe", () => {
       headers: { "fly-replay-src": "instance=other;t=1" },
     });
     expect(res.status).toBe(302);
-    expect(res.headers.get("location")).toBe(`http://localhost:${server.port}/health`);
+    expect(res.headers.get("location")).toBe("/health");
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 

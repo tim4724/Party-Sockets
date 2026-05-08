@@ -970,12 +970,15 @@ const server = Bun.serve({
       }
       // Fallback target: the pinned machine is unreachable. For plain HTTP
       // requests, redirect to a clean URL so a stale bookmark doesn't stay
-      // pinned. WS upgrades fall through to local handling — the user lands
-      // on a healthy machine and gets the usual "Room not found" on join.
+      // pinned. Use a relative redirect so the browser keeps the original
+      // scheme + host (req.url has the internal localhost:3000). WS upgrades
+      // fall through to local handling — the user lands on a healthy machine
+      // and gets the usual "Room not found" on join.
       const isUpgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
       if (!isUpgrade) {
         url.searchParams.delete("instance");
-        return Response.redirect(url.toString(), 302);
+        const path = url.pathname + (url.search || "");
+        return new Response(null, { status: 302, headers: { Location: path } });
       }
     }
     // Pull a candidate room code out of either /<code> (WS upgrade) or
