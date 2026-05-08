@@ -446,6 +446,8 @@ describe("stats endpoint", () => {
       region: expect.any(String),
       rooms: 1,
       clients: 1,
+      publicRooms: expect.any(Number),
+      publicClients: expect.any(Number),
     });
     expect(typeof body.uptimeMs).toBe("number");
     expect(Number.isFinite(body.uptimeMs)).toBe(true);
@@ -653,29 +655,39 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
-  test("status page renders a row for each responsive peer", async () => {
-    peerStatus.set("abc123", 200);
-    peerStatus.set("def456", 200);
-
+  test("status page renders one row per DNS-known peer with placeholders", async () => {
+    // Server-side rendering trusts DNS for the machine list. peerStatus only
+    // affects the *client-side* /stats fetch (which we don't run here), so
+    // we don't need to set anything on it for this test.
     const res = await origFetch(`http://localhost:${server.port}/`);
     expect(res.status).toBe(200);
     const html = await res.text();
     expect(html).toContain('href="?instance=abc123"');
     expect(html).toContain('href="?instance=def456"');
+    expect(html).toContain('data-stats-url="/stats?instance=abc123"');
+    expect(html).toContain('data-stats-url="/stats?instance=def456"');
     expect(html).toContain("fra");
     expect(html).toContain("iad");
-    // Hero shows machine count via the kv block; expect the value `3`.
+    // Self + 2 peers from DNS.
     expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">3<\/span>/);
+    expect(html).toContain('class="row machine current"');
+    // Peer counts are placeholders — browser fills them via /stats?instance=<id>.
+    expect(html).toMatch(/class="row machine peer"[\s\S]*?<span class="m-counts">…<\/span>/);
   });
 
-  test("status page shows only self when no peers respond", async () => {
-    // peerStatus is empty — both abc123 and def456 return 404 to /stats.
+  test("origin names are HTML-escaped (Origin header is user-controlled)", async () => {
+    // Inject a room with a hostile origin and confirm the rendered status
+    // page escapes it instead of letting it break out into HTML.
+    rooms.set("XSSXSS", {
+      maxClients: 1,
+      origin: "https://evil\"><script>alert(1)</script>",
+      clients: new Map(),
+    });
     const res = await origFetch(`http://localhost:${server.port}/`);
-    expect(res.status).toBe(200);
     const html = await res.text();
-    expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">1<\/span>/);
-    expect(html).not.toContain('href="?instance=');
-    expect(html).toContain('class="row machine current"');
+    rooms.delete("XSSXSS");
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
   test("findRoomOnPeers filters to the requested region", async () => {

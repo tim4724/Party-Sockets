@@ -40,7 +40,10 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // platform leak; on other platforms set INSTANCE_ID / REGION directly.
 const INSTANCE_ID = process.env.INSTANCE_ID ?? process.env.FLY_MACHINE_ID ?? "";
 const REGION = process.env.REGION ?? process.env.FLY_REGION ?? "";
-const PEER_PROBE_TIMEOUT_MS = 500;
+// Peer probe (findRoomOnPeers) blocks the user's request when typing a code,
+// but cross-region cold-connections need real headroom. 3s tolerates a single
+// slow sibling without giving up.
+const PEER_PROBE_TIMEOUT_MS = 3000;
 
 // --- State ---
 
@@ -146,6 +149,16 @@ interface Peer {
 }
 
 async function getPeers(): Promise<Peer[]> {
+  // PEERS=http://localhost:3001,http://localhost:3002 enables a non-Fly path
+  // for local multi-instance demos. id is the base URL; the renderer detects
+  // the http:// prefix and routes the click + client-side stats fetch directly.
+  const peersEnv = process.env.PEERS;
+  if (peersEnv) {
+    return peersEnv.split(",").map(s => s.trim()).filter(Boolean).map((u) => {
+      const base = u.replace(/\/$/, "");
+      return { id: base, region: "" };
+    });
+  }
   const app = process.env.FLY_APP_NAME ?? "";
   if (!app) return [];
   const dns = await import("node:dns/promises");
@@ -195,70 +208,15 @@ interface PeerStats {
   uptimeMs: number;
   rooms: number;
   clients: number;
+  // Counts excluding localhost/RFC-1918 origins, so the client-side
+  // "show local" toggle stays accurate when aggregating across machines.
+  publicRooms: number;
+  publicClients: number;
   origins: Record<string, OriginAgg>;
 }
 
-interface PeerView {
-  stats: PeerStats;
-  link: string;
-}
-
-function isOriginAgg(x: unknown): x is OriginAgg {
-  if (!x || typeof x !== "object") return false;
-  const o = x as { live?: { rooms?: unknown; clients?: unknown }; totals?: { connections?: unknown; rooms?: unknown } };
-  return typeof o.live?.rooms === "number" && typeof o.live?.clients === "number"
-    && typeof o.totals?.connections === "number" && typeof o.totals?.rooms === "number";
-}
-
-async function fetchPeerStats(): Promise<PeerView[]> {
-  // PEERS=http://localhost:3001,http://localhost:3002 enables a non-Fly path
-  // for local multi-instance demos. Fly normally discovers via 6PN DNS instead.
-  const peersEnv = process.env.PEERS;
-  let targets: { url: string; link: string }[];
-  if (peersEnv) {
-    targets = peersEnv.split(",").map(s => s.trim()).filter(Boolean).map((u) => {
-      const base = u.replace(/\/$/, "");
-      return { url: `${base}/stats`, link: base };
-    });
-  } else {
-    const app = process.env.FLY_APP_NAME ?? "";
-    if (!app) return [];
-    const peers = await getPeers();
-    if (peers.length === 0) return [];
-    targets = peers.map(({ id }) => ({
-      url: `http://${id}.vm.${app}.internal:${PORT}/stats`,
-      link: `?instance=${encodeURIComponent(id)}`,
-    }));
-  }
-  const fetches = targets.map(async ({ url, link }): Promise<PeerView | null> => {
-    try {
-      const res = await fetch(url, { signal: AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS) });
-      if (!res.ok) return null;
-      const body = await res.json() as Partial<PeerStats>;
-      if (typeof body?.instance !== "string") return null;
-      const origins: Record<string, OriginAgg> = {};
-      if (body.origins && typeof body.origins === "object") {
-        for (const [k, v] of Object.entries(body.origins)) {
-          if (isOriginAgg(v)) origins[k] = v;
-        }
-      }
-      return {
-        stats: {
-          instance: body.instance,
-          region: typeof body.region === "string" ? body.region : "",
-          uptimeMs: typeof body.uptimeMs === "number" ? body.uptimeMs : 0,
-          rooms: typeof body.rooms === "number" ? body.rooms : 0,
-          clients: typeof body.clients === "number" ? body.clients : 0,
-          origins,
-        },
-        link,
-      };
-    } catch {
-      return null;
-    }
-  });
-  return (await Promise.all(fetches)).filter((p): p is PeerView => p !== null);
-}
+const IS_LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/;
+function isLocalOriginName(o: string): boolean { return IS_LOCAL_ORIGIN.test(o); }
 
 function buildOriginAggForSelf(origins: Map<string, OriginStats>): Record<string, OriginAgg> {
   const out: Record<string, OriginAgg> = {};
@@ -446,56 +404,52 @@ function getOriginStats(): { roomCount: number; clientCount: number; origins: Ma
   return { roomCount, clientCount, origins };
 }
 
+function escapeHtml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+}
+
 function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFamily?: string): string {
+function statusPage(origins: Map<string, OriginStats>, peers: Peer[], ipFamily?: string): string {
   const uptimeMs = Date.now() - serverStartedAt;
-  const isLocalOrigin = (o: string) => /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(o);
 
-  // Merge per-machine origins into a cluster view. Live counts aggregate cleanly
-  // (sum of right-now numbers); since-boot totals are summed too — slightly
-  // lossy when machines have different uptimes, but consistent with how we
-  // already frame the data.
-  const cluster = new Map<string, OriginAgg>();
-  function addOrigin(name: string, agg: OriginAgg) {
-    const e = cluster.get(name) ?? { live: { rooms: 0, clients: 0 }, totals: { connections: 0, rooms: 0 } };
-    e.live.rooms += agg.live.rooms;
-    e.live.clients += agg.live.clients;
-    e.totals.connections += agg.totals.connections;
-    e.totals.rooms += agg.totals.rooms;
-    cluster.set(name, e);
-  }
-  const selfOrigins = buildOriginAggForSelf(origins);
-  for (const [n, a] of Object.entries(selfOrigins)) addOrigin(n, a);
-  for (const p of peers) for (const [n, a] of Object.entries(p.stats.origins)) addOrigin(n, a);
-
-  const hasLocal = Array.from(cluster.keys()).some(isLocalOrigin);
+  // This-machine view only. Cluster aggregation (peer counts, peer origins)
+  // happens client-side after the page loads — see loadPeerStats() below.
+  const allOriginNames = new Set<string>([...origins.keys(), ...originCounters.keys()]);
+  const hasLocal = Array.from(allOriginNames).some(isLocalOriginName);
 
   let allRooms = 0, allClients = 0, publicRooms = 0, publicClients = 0;
-  for (const [name, agg] of cluster) {
-    allRooms += agg.live.rooms;
-    allClients += agg.live.clients;
-    if (!isLocalOrigin(name)) {
-      publicRooms += agg.live.rooms;
-      publicClients += agg.live.clients;
+  for (const [name, s] of origins) {
+    allRooms += s.rooms;
+    allClients += s.clients;
+    if (!isLocalOriginName(name)) {
+      publicRooms += s.rooms;
+      publicClients += s.clients;
     }
   }
   const machineCount = peers.length + 1;
 
-  // Origin rows: filled dot when live, hollow when only since-boot.
-  const originRows = Array.from(cluster)
-    .sort((a, b) => b[1].live.clients - a[1].live.clients || b[1].totals.connections - a[1].totals.connections)
-    .map(([name, agg]) => {
-      const display = name.replace(/^https?:\/\//, "");
-      const local = isLocalOrigin(name);
-      const isLive = agg.live.clients > 0 || agg.live.rooms > 0;
+  // Origin rows: this machine only. Filled dot when live, hollow when idle.
+  const originRows = Array.from(allOriginNames)
+    .map((name) => {
+      const live = origins.get(name) ?? { rooms: 0, clients: 0 };
+      const totals = originCounters.get(name) ?? { connections: 0, rooms: 0 };
+      return { name, live, totals };
+    })
+    .sort((a, b) => b.live.clients - a.live.clients || b.totals.connections - a.totals.connections)
+    .map(({ name, live, totals }) => {
+      // name comes from the WebSocket Origin header — user-controlled.
+      const display = escapeHtml(name.replace(/^https?:\/\//, ""));
+      const local = isLocalOriginName(name);
+      const isLive = live.clients > 0 || live.rooms > 0;
       const mark = isLive ? "●" : "○";
-      const liveText = `${fmt(agg.live.clients)}c · ${fmt(agg.live.rooms)}r`;
-      const totalsText = agg.totals.connections === 0 && agg.totals.rooms === 0
+      const liveText = `${fmt(live.clients)}c · ${fmt(live.rooms)}r`;
+      const totalsText = totals.connections === 0 && totals.rooms === 0
         ? "no traffic yet"
-        : `${fmt(agg.totals.connections)} conn · ${fmt(agg.totals.rooms)} room${agg.totals.rooms !== 1 ? "s" : ""} since boot`;
+        : `${fmt(totals.connections)} conn · ${fmt(totals.rooms)} room${totals.rooms !== 1 ? "s" : ""} since boot`;
       return `<div class="row origin${isLive ? "" : " idle"}"${local ? " data-local" : ""}>
   <span class="mark">${mark}</span>
   <span class="o-name">${display}</span>
@@ -505,8 +459,8 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
     })
     .join("");
 
-  // Machine rows: current first, peers below as links. Region · uptime sit
-  // beneath the id (full ipFamily lives in the splash; rows stay tight).
+  // Machine rows: current first, peers below as links. Peer counts arrive
+  // client-side via loadPeerStats(); render placeholders here.
   const shortenId = (id: string) => (id.length > 10 ? id.slice(0, 6) : id);
   const selfId = INSTANCE_ID ? shortenId(INSTANCE_ID) : "local";
   const selfMetaRow = [REGION, formatUptime(uptimeMs)].filter(Boolean).join(" · ");
@@ -519,17 +473,33 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
   <span class="m-counts">${fmt(selfClientCount)}c · ${fmt(selfRoomCount)}r</span>
   <span class="m-meta">${selfMetaRow}</span>
 </div>`;
+  function peerLinks(p: Peer): { link: string; statsUrl: string; idShort: string } {
+    if (p.id.startsWith("http")) {
+      // Local PEERS env mode — id is the base URL.
+      const base = p.id.replace(/\/$/, "");
+      return {
+        link: base,
+        statsUrl: `${base}/stats`,
+        idShort: base.replace(/^https?:\/\//, ""),
+      };
+    }
+    return {
+      link: `?instance=${encodeURIComponent(p.id)}`,
+      statsUrl: `/stats?instance=${encodeURIComponent(p.id)}`,
+      idShort: shortenId(p.id),
+    };
+  }
+  // Defense-in-depth: id/region come from DNS or the PEERS env. Both should be
+  // operator-controlled, but escape anyway so a stray quote can't break out.
   const peerRows = peers
-    .slice()
-    .sort((a, b) => b.stats.clients - a.stats.clients || b.stats.rooms - a.stats.rooms)
-    .map(({ stats: p, link }) => {
-      const idShort = p.instance ? shortenId(p.instance) : "peer";
-      const meta = [p.region, formatUptime(p.uptimeMs)].filter(Boolean).join(" · ");
-      return `<a class="row machine peer" href="${link}">
+    .map((p) => {
+      const { link, statsUrl, idShort } = peerLinks(p);
+      const meta = p.region || "";
+      return `<a class="row machine peer" href="${escapeHtml(link)}" data-stats-url="${escapeHtml(statsUrl)}">
   <span class="mark">●</span>
-  <span class="m-id">${idShort}</span>
-  <span class="m-counts">${fmt(p.clients)}c · ${fmt(p.rooms)}r</span>
-  <span class="m-meta">${meta}</span>
+  <span class="m-id">${escapeHtml(idShort)}</span>
+  <span class="m-counts">…</span>
+  <span class="m-meta">${escapeHtml(meta)}</span>
 </a>`;
     })
     .join("");
@@ -683,6 +653,9 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
     background: var(--bg);
   }
   html.hide-local [data-local] { display: none; }
+  .row.machine.unreachable .mark { color: var(--dim); }
+  .row.machine.unreachable .m-counts { color: var(--dim); }
+  .row.machine.unreachable .m-meta::after { content: ' · unreachable'; color: var(--dim); }
   .paused-tag { display: none; color: var(--muted); }
   html.paused .paused-tag { display: inline; }
 
@@ -755,8 +728,8 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
       <span class="self">${selfId}</span>
     </div>
     <div class="stats">
-      <span class="stat"><span class="k">clients</span><span class="num sn" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span></span>
-      <span class="stat"><span class="k">rooms</span><span class="num sn" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span></span>
+      <span class="stat"><span class="k">clients</span><span class="num sn" data-stat-key="clients" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span></span>
+      <span class="stat"><span class="k">rooms</span><span class="num sn" data-stat-key="rooms" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span></span>
       <span class="stat"><span class="k">machines</span><span class="num">${machineCount}</span></span>
     </div>
   </section>
@@ -773,10 +746,10 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
         <span>≡  origins</span>
         ${hasLocal
           ? '<label class="lt"><input type="checkbox" id="show-local"><span class="lt-box"></span><span>local</span></label>'
-          : `<span class="meta">${cluster.size}</span>`}
+          : `<span class="meta">${allOriginNames.size}</span>`}
       </div>
       <div class="panel-c">
-        ${cluster.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
+        ${allOriginNames.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
       </div>
     </section>
   </div>
@@ -992,6 +965,16 @@ document.addEventListener('change', function(e) {
 syncToggle();
 updateCounts();
 
+// After the splash section is swapped in by refresh(), the freshly-rendered
+// data-all/data-public values are the canonical "self" baseline. Stamp them
+// onto data-self-* so loadPeerStats() can re-augment from a known origin.
+function stampSelfBaseline() {
+  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
+    el.dataset.selfAll = el.dataset.all;
+    el.dataset.selfPublic = el.dataset.public;
+  });
+}
+
 async function refresh() {
   if (testActive) return;
   try {
@@ -1003,9 +986,75 @@ async function refresh() {
       var fresh = doc.querySelector('section[data-refresh="' + sec.dataset.refresh + '"]');
       if (fresh) sec.innerHTML = fresh.innerHTML;
     });
+    stampSelfBaseline();
     syncToggle();
     updateCounts();
+    loadPeerStats();
   } catch (e) {}
+}
+
+// Fetch /stats from each peer over the public edge (Fly fly-replays via
+// ?instance=<id>; local PEERS-mode hits the URL directly). Updates each
+// peer row's counts/meta and augments the splash cluster totals. Failed
+// fetches mark the row "unreachable". A generation counter guards against
+// stale writes when a refresh fires while a previous fetch is in-flight.
+var loadPeerStatsGen = 0;
+async function loadPeerStats() {
+  var gen = ++loadPeerStatsGen;
+  var rows = document.querySelectorAll('a.row.machine.peer[data-stats-url]');
+  if (!rows.length) return;
+  var peerSums = { clients: 0, rooms: 0, publicClients: 0, publicRooms: 0 };
+  await Promise.all(Array.prototype.map.call(rows, async function(row) {
+    var url = row.dataset.statsUrl;
+    try {
+      var ctl = new AbortController();
+      var t = setTimeout(function() { ctl.abort(); }, 5000);
+      var r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
+      clearTimeout(t);
+      if (!r.ok) { row.classList.add('unreachable'); return; }
+      var d = await r.json();
+      if (typeof d.clients !== 'number' || typeof d.rooms !== 'number') {
+        row.classList.add('unreachable'); return;
+      }
+      // A newer call has started — don't write stale per-row updates either.
+      if (gen !== loadPeerStatsGen) return;
+      var counts = row.querySelector('.m-counts');
+      if (counts) counts.textContent = d.clients + 'c · ' + d.rooms + 'r';
+      var meta = row.querySelector('.m-meta');
+      if (meta) {
+        var parts = [];
+        if (d.region) parts.push(d.region);
+        if (typeof d.uptimeMs === 'number') {
+          var s = Math.floor(d.uptimeMs / 1000);
+          var days = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
+          parts.push((days ? days + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm');
+        }
+        meta.textContent = parts.join(' · ');
+      }
+      row.classList.remove('unreachable');
+      peerSums.clients += d.clients;
+      peerSums.rooms += d.rooms;
+      peerSums.publicClients += (typeof d.publicClients === 'number' ? d.publicClients : d.clients);
+      peerSums.publicRooms += (typeof d.publicRooms === 'number' ? d.publicRooms : d.rooms);
+    } catch (e) {
+      row.classList.add('unreachable');
+    }
+  }));
+  if (gen !== loadPeerStatsGen) return;
+  // Augment splash totals from a stable self baseline.
+  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
+    var k = el.dataset.statKey;
+    if (k !== 'clients' && k !== 'rooms') return;
+    var selfAll = parseInt(el.dataset.selfAll != null ? el.dataset.selfAll : el.dataset.all, 10) || 0;
+    var selfPub = parseInt(el.dataset.selfPublic != null ? el.dataset.selfPublic : el.dataset.public, 10) || 0;
+    el.dataset.selfAll = String(selfAll);
+    el.dataset.selfPublic = String(selfPub);
+    var addAll = (k === 'clients') ? peerSums.clients : peerSums.rooms;
+    var addPub = (k === 'clients') ? peerSums.publicClients : peerSums.publicRooms;
+    el.dataset.all = String(selfAll + addAll);
+    el.dataset.public = String(selfPub + addPub);
+  });
+  updateCounts();
 }
 // Auto-refresh every 30s while the tab is visible, capped at 2 minutes from
 // the last activation — idle tabs shouldn't fan out peer /stats forever.
@@ -1030,6 +1079,8 @@ document.addEventListener('visibilitychange', function() {
   else { refresh(); startPolling(); }
 });
 if (!document.hidden) startPolling();
+stampSelfBaseline();
+loadPeerStats();
 </script>
 </body>
 </html>`;
@@ -1109,12 +1160,18 @@ const server = Bun.serve({
     }
     if (url.pathname === "/stats") {
       const { roomCount, clientCount, origins } = getOriginStats();
+      let publicRooms = 0, publicClients = 0;
+      for (const [name, s] of origins) {
+        if (!isLocalOriginName(name)) { publicRooms += s.rooms; publicClients += s.clients; }
+      }
       const payload: PeerStats = {
         instance: INSTANCE_ID,
         region: REGION,
         uptimeMs: Date.now() - serverStartedAt,
         rooms: roomCount,
         clients: clientCount,
+        publicRooms,
+        publicClients,
         origins: buildOriginAggForSelf(origins),
       };
       return new Response(JSON.stringify(payload), {
@@ -1152,7 +1209,7 @@ const server = Bun.serve({
       const { origins } = getOriginStats();
       const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0].trim();
       const ipFamily = forwarded?.includes(":") && !forwarded.startsWith("::ffff:") ? "IPv6" : "IPv4";
-      const peers = await fetchPeerStats();
+      const peers = await getPeers();
       return new Response(statusPage(origins, peers, ipFamily), {
         headers: { "Content-Type": "text/html" },
       });
