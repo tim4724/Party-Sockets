@@ -105,6 +105,9 @@ export function packRoomCodeValue(regionIdx: number | null, body: number): numbe
   return regionIdx !== null ? regionIdx * Math.pow(2, BODY_BITS) + body : body;
 }
 
+// Caller must rooms.set the returned code synchronously. Bun's WS message
+// handler is single-threaded JS so no other create can race between the
+// has() check here and the caller's set().
 function generateRoomCode(): string {
   for (let attempt = 0; attempt < 10; attempt++) {
     const body = randomBits(REGION_IDX !== null ? BODY_BITS : TOTAL_BITS);

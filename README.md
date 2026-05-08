@@ -4,7 +4,7 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 ## How it works
 
-- A client **creates** a room (server assigns a variable-length code, or uses a preferred code) with a max client limit
+- A client **creates** a room (server assigns a 6-char code) with a max client limit
 - Other clients **join** by room code
 - Clients provide their own UUID — reconnecting with the same UUID replaces the old connection
 - Messages can be **broadcast** to all peers or **sent** to a specific client
