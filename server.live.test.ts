@@ -121,8 +121,8 @@ describe.skipIf(!LIVE)("live", () => {
     const peerJoined = waitForType(ws1, "peer_joined");
     const guestId = "guest-" + rand();
     sendMsg(ws2, { type: "join", clientId: guestId, room: created.room });
-    await waitForType(ws2, "joined");
-    expect((await peerJoined).clientId).toBe(guestId);
+    const joined = await waitForType(ws2, "joined");
+    expect((await peerJoined).index).toBe(joined.index);
 
     const incoming = waitForType(ws1, "message");
     sendMsg(ws2, { type: "send", data: "hi" });
@@ -130,7 +130,7 @@ describe.skipIf(!LIVE)("live", () => {
 
     const peerLeft = waitForType(ws1, "peer_left");
     ws2.close();
-    expect((await peerLeft).clientId).toBe(guestId);
+    expect((await peerLeft).index).toBe(joined.index);
   });
 
   test("stale ?instance= falls back to a healthy machine (no 502)", async () => {
@@ -201,7 +201,7 @@ describe.skipIf(!LIVE)("live", () => {
     sendMsg(ws2, { type: "join", clientId: guestId, room: created.room });
     const joined = await waitForType(ws2, "joined");
     expect(joined.room).toBe(created.room);
-    expect(joined.clients).toContain(guestId);
+    expect(typeof joined.index).toBe("number");
   });
 
   // fly-force-instance-id is a fly-proxy header that pins the request to a
