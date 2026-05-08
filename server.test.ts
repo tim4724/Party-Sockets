@@ -446,6 +446,8 @@ describe("stats endpoint", () => {
       region: expect.any(String),
       rooms: 1,
       clients: 1,
+      publicRooms: expect.any(Number),
+      publicClients: expect.any(Number),
     });
     expect(typeof body.uptimeMs).toBe("number");
     expect(Number.isFinite(body.uptimeMs)).toBe(true);
@@ -653,7 +655,7 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
-  test("status page renders one row per DNS-known peer", async () => {
+  test("status page renders one row per DNS-known peer with placeholders", async () => {
     // Server-side rendering trusts DNS for the machine list. peerStatus only
     // affects the *client-side* /stats fetch (which we don't run here), so
     // we don't need to set anything on it for this test.
@@ -669,14 +671,7 @@ describe("peer probe", () => {
     // Self + 2 peers from DNS.
     expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">3<\/span>/);
     expect(html).toContain('class="row machine current"');
-  });
-
-  test("peer rows render with placeholder counts (filled client-side)", async () => {
-    // Server doesn't fetch peer /stats anymore — counts are placeholders that
-    // the browser fills in via /stats?instance=<id>. Verify the placeholder.
-    const res = await origFetch(`http://localhost:${server.port}/`);
-    const html = await res.text();
-    // A peer row with a "…" placeholder for counts.
+    // Peer counts are placeholders — browser fills them via /stats?instance=<id>.
     expect(html).toMatch(/class="row machine peer"[\s\S]*?<span class="m-counts">…<\/span>/);
   });
 
