@@ -1,6 +1,6 @@
 FROM oven/bun:1-alpine AS build
 WORKDIR /app
-COPY package.json server.ts ./
+COPY package.json *.ts ./
 RUN bun build server.ts --target=bun --outfile=server.js
 
 FROM oven/bun:1-alpine
