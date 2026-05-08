@@ -56,6 +56,31 @@ afterEach(() => {
 // multi-machine tests then self-skip.
 const FLY_APP = process.env.FLY_APP_NAME ?? "party-sockets";
 
+interface Machine { id: string; region: string }
+
+// All deployed machines (any state). Cross-region replay tests want every
+// region — Fly auto-wakes suspended/stopped targets when fly-force-instance-id
+// pins to them, so state filtering would shrink the matrix unnecessarily.
+function getMachineList(): Machine[] {
+  if (process.env.LIVE_MACHINES) {
+    // "id1:region1,id2:region2" — region carried alongside id.
+    return process.env.LIVE_MACHINES.split(",").map((s) => {
+      const [id, region = ""] = s.trim().split(":");
+      return { id, region };
+    }).filter((m) => m.id);
+  }
+  try {
+    const proc = Bun.spawnSync(["fly", "machines", "list", "--json", "--app", FLY_APP]);
+    if (proc.exitCode !== 0) return [];
+    const data = JSON.parse(proc.stdout.toString());
+    return data
+      .filter((m: any) => m.state !== "destroyed")
+      .map((m: any) => ({ id: m.id as string, region: m.region as string }));
+  } catch {
+    return [];
+  }
+}
+
 function getInstanceIds(): string[] {
   if (process.env.LIVE_INSTANCES) {
     return process.env.LIVE_INSTANCES.split(",").map((s) => s.trim()).filter(Boolean);
@@ -171,6 +196,38 @@ describe.skipIf(!LIVE)("live", () => {
     expect(joined.room).toBe(created.room);
     expect(joined.clients).toContain(guestId);
   });
+
+  // fly-force-instance-id is a fly-proxy header that pins the request to a
+  // specific machine without putting `?instance=` in the URL — letting the
+  // candidate-code routing block fire (it skips when ?instance= is set). We
+  // mint a code in region A, then GET /room/<code> on a machine in region B.
+  // Without cross-region replay, B would 404 because the room isn't there;
+  // with it, B emits `fly-replay region=A`, fly-proxy delivers to A, and the
+  // room is found.
+  test("cross-region replay: /room/<code> bounces to the home region", async () => {
+    const machines = getMachineList();
+    const byRegion = new Map<string, Machine>();
+    for (const m of machines) {
+      if (m.region && !byRegion.has(m.region)) byRegion.set(m.region, m);
+    }
+    if (byRegion.size < 2) {
+      console.log(`[live] only ${byRegion.size} region(s) deployed — skipping cross-region replay assertion`);
+      return;
+    }
+
+    const [host, other] = [...byRegion.values()];
+    const ws = track(await connect(host.id));
+    sendMsg(ws, { type: "create", clientId: "host-" + rand(), maxClients: 2 });
+    const created = await waitForType(ws, "created");
+    expect(created.region).toBe(host.region);
+
+    const res = await fetch(`${HTTP_URL}/room/${created.room}`, {
+      headers: { "fly-force-instance-id": other.id },
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.clients).toBe(1);
+  }, 30000);
 
   test("/room/<code> works without ?instance=", async () => {
     const ids = getInstanceIds();
