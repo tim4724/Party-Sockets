@@ -1,4 +1,6 @@
 import type { ServerWebSocket } from "bun";
+import * as base58 from "./base58";
+import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 
 // --- Types ---
 
@@ -47,62 +49,20 @@ const serverStartedAt = Date.now();
 let draining = false;
 
 // --- Stats ---
+// Counters since process start. Lost on machine restart / scale-to-zero, which
+// is why the status page frames numbers as "since boot" alongside the uptime.
 
-interface DayStats {
+interface OriginCounters {
   connections: number;
   rooms: number;
 }
 
-// origin -> date -> DayStats
-const stats = new Map<string, Map<string, DayStats>>();
+const originCounters = new Map<string, OriginCounters>();
 
-function incrementStat(origin: string, field: keyof DayStats) {
-  const date = new Date().toISOString().slice(0, 10);
-  let originMap = stats.get(origin);
-  if (!originMap) { originMap = new Map(); stats.set(origin, originMap); }
-  const s = originMap.get(date);
-  if (s) s[field]++;
-  else originMap.set(date, { connections: 0, rooms: 0, [field]: 1 });
-}
-
-function dateStr(d: Date): string {
-  return d.toISOString().slice(0, 10);
-}
-
-function pruneStats() {
-  const cutoff = new Date();
-  cutoff.setDate(cutoff.getDate() - 366);
-  const cutoffStr = dateStr(cutoff);
-  for (const [origin, originMap] of stats) {
-    for (const date of originMap.keys()) {
-      if (date < cutoffStr) originMap.delete(date);
-    }
-    if (originMap.size === 0) stats.delete(origin);
-  }
-}
-
-function aggregateStats(sinceDate: string, origin: string): DayStats {
-  const result: DayStats = { connections: 0, rooms: 0 };
-  const originMap = stats.get(origin);
-  if (!originMap) return result;
-  for (const [date, s] of originMap) {
-    if (date < sinceDate) continue;
-    result.connections += s.connections;
-    result.rooms += s.rooms;
-  }
-  return result;
-}
-
-function getStatsPeriods(origin: string) {
-  const now = new Date();
-  const d1 = new Date(now); d1.setDate(d1.getDate() - 1);
-  const d30 = new Date(now); d30.setDate(d30.getDate() - 30);
-  const d365 = new Date(now); d365.setDate(d365.getDate() - 365);
-  return {
-    day1: aggregateStats(dateStr(d1), origin),
-    days30: aggregateStats(dateStr(d30), origin),
-    days365: aggregateStats(dateStr(d365), origin),
-  };
+function incrementStat(origin: string, field: keyof OriginCounters) {
+  let entry = originCounters.get(origin);
+  if (!entry) { entry = { connections: 0, rooms: 0 }; originCounters.set(origin, entry); }
+  entry[field]++;
 }
 
 function formatUptime(ms: number): string {
@@ -118,24 +78,62 @@ function formatUptime(ms: number): string {
 }
 
 // --- Room code generation ---
+// 6-char base58 codes. When FLY_REGION is set, the top 5 bits encode the
+// region index so any peer can decode the code and fly-replay directly to the
+// home region — no peer probe needed for new-format codes. Locally (no
+// FLY_REGION) we use the full 35-bit random space and skip region routing.
 
-const ROOM_CHARS = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789";
-const ROOM_CODE_REGEX = /^[A-Z0-9]{4,8}$/;
-const ROOM_CODE_MIN_LEN = 4;
-const ROOM_CODE_MAX_LEN = 8;
-const ATTEMPTS_PER_LENGTH = 10;
+const CODE_LENGTH = 6;
+const BODY_BITS = 30;
+const BODY_MASK = (1 << BODY_BITS) - 1;
+const REGION_IDX = REGION ? encodeRegion(REGION) : null;
+const TOTAL_BITS = REGION_IDX !== null ? BODY_BITS + REGION_BITS : 35;
+
+function randomBits(bits: number): number {
+  const buf = new Uint32Array(2);
+  crypto.getRandomValues(buf);
+  // Combine two 32-bit words into a 53-bit-safe integer, then mask.
+  const combined = buf[0] * 0x100000000 + buf[1];
+  return Math.floor(combined % Math.pow(2, bits));
+}
 
 function generateRoomCode(): string {
-  for (let len = ROOM_CODE_MIN_LEN; len <= ROOM_CODE_MAX_LEN; len++) {
-    for (let attempt = 0; attempt < ATTEMPTS_PER_LENGTH; attempt++) {
-      let code = "";
-      for (let i = 0; i < len; i++) {
-        code += ROOM_CHARS[Math.floor(Math.random() * ROOM_CHARS.length)];
-      }
-      if (!rooms.has(code)) return code;
-    }
+  for (let attempt = 0; attempt < 10; attempt++) {
+    const value = REGION_IDX !== null
+      ? (REGION_IDX << BODY_BITS) | randomBits(BODY_BITS)
+      : randomBits(TOTAL_BITS);
+    const code = base58.encode(value, CODE_LENGTH);
+    if (!rooms.has(code)) return code;
   }
   throw new Error("Could not generate a unique room code");
+}
+
+interface DecodedCode {
+  region: string | null;
+}
+
+// Pure decode: returns { region } if the code is a valid 6-char base58 code
+// whose top 5 bits map to a known region. Caller decides what to do with
+// that information (route on Fly, ignore locally, etc).
+export function tryDecodeRoomCode(code: string): DecodedCode | null {
+  if (code.length !== CODE_LENGTH) return null;
+  const value = base58.decode(code);
+  if (value === null) return null;
+  if (value < 0 || value >= Math.pow(2, 35)) return null;
+  const regionIdx = Math.floor(value / Math.pow(2, BODY_BITS));
+  return { region: decodeRegion(regionIdx) };
+}
+
+function tryUseCustomCode(requested: string): string | null {
+  if (typeof requested !== "string" || requested.length !== CODE_LENGTH) return null;
+  const decoded = tryDecodeRoomCode(requested);
+  if (decoded === null) return null;
+  // On Fly, custom code must encode our region or we'd be unreachable via
+  // direct routing. Locally, region check is meaningless — accept any code
+  // that's valid base58.
+  if (REGION_IDX !== null && decoded.region !== REGION) return null;
+  if (rooms.has(requested)) return null;
+  return requested;
 }
 
 // --- Peer discovery ---
@@ -183,6 +181,94 @@ async function isKnownInstance(id: string): Promise<boolean> {
   return peers.includes(id);
 }
 
+interface OriginAgg {
+  live: { rooms: number; clients: number };
+  totals: { connections: number; rooms: number };
+}
+
+interface PeerStats {
+  instance: string;
+  region: string;
+  uptimeMs: number;
+  rooms: number;
+  clients: number;
+  origins: Record<string, OriginAgg>;
+}
+
+interface PeerView {
+  stats: PeerStats;
+  link: string;
+}
+
+function isOriginAgg(x: unknown): x is OriginAgg {
+  if (!x || typeof x !== "object") return false;
+  const o = x as { live?: { rooms?: unknown; clients?: unknown }; totals?: { connections?: unknown; rooms?: unknown } };
+  return typeof o.live?.rooms === "number" && typeof o.live?.clients === "number"
+    && typeof o.totals?.connections === "number" && typeof o.totals?.rooms === "number";
+}
+
+async function fetchPeerStats(): Promise<PeerView[]> {
+  // PEERS=http://localhost:3001,http://localhost:3002 enables a non-Fly path
+  // for local multi-instance demos. Fly normally discovers via 6PN DNS instead.
+  const peersEnv = process.env.PEERS;
+  let targets: { url: string; link: string }[];
+  if (peersEnv) {
+    targets = peersEnv.split(",").map(s => s.trim()).filter(Boolean).map((u) => {
+      const base = u.replace(/\/$/, "");
+      return { url: `${base}/stats`, link: base };
+    });
+  } else {
+    const app = process.env.FLY_APP_NAME ?? "";
+    if (!app) return [];
+    const peers = await getPeerInstanceIds();
+    if (peers.length === 0) return [];
+    targets = peers.map((id) => ({
+      url: `http://${id}.vm.${app}.internal:${PORT}/stats`,
+      link: `?instance=${encodeURIComponent(id)}`,
+    }));
+  }
+  const fetches = targets.map(async ({ url, link }): Promise<PeerView | null> => {
+    try {
+      const res = await fetch(url, { signal: AbortSignal.timeout(PEER_PROBE_TIMEOUT_MS) });
+      if (!res.ok) return null;
+      const body = await res.json() as Partial<PeerStats>;
+      if (typeof body?.instance !== "string") return null;
+      const origins: Record<string, OriginAgg> = {};
+      if (body.origins && typeof body.origins === "object") {
+        for (const [k, v] of Object.entries(body.origins)) {
+          if (isOriginAgg(v)) origins[k] = v;
+        }
+      }
+      return {
+        stats: {
+          instance: body.instance,
+          region: typeof body.region === "string" ? body.region : "",
+          uptimeMs: typeof body.uptimeMs === "number" ? body.uptimeMs : 0,
+          rooms: typeof body.rooms === "number" ? body.rooms : 0,
+          clients: typeof body.clients === "number" ? body.clients : 0,
+          origins,
+        },
+        link,
+      };
+    } catch {
+      return null;
+    }
+  });
+  return (await Promise.all(fetches)).filter((p): p is PeerView => p !== null);
+}
+
+function buildOriginAggForSelf(origins: Map<string, OriginStats>): Record<string, OriginAgg> {
+  const out: Record<string, OriginAgg> = {};
+  const names = new Set<string>([...origins.keys(), ...originCounters.keys()]);
+  for (const name of names) {
+    out[name] = {
+      live: origins.get(name) ?? { rooms: 0, clients: 0 },
+      totals: originCounters.get(name) ?? { connections: 0, rooms: 0 },
+    };
+  }
+  return out;
+}
+
 function flyReplayToInstance(id: string): Response {
   // instance= forces cross-region routing; prefer_instance silently falls back
   // to the local edge's machine. timeout=5s lets a scaled-to-zero target wake
@@ -192,6 +278,13 @@ function flyReplayToInstance(id: string): Response {
   return new Response(null, {
     status: 409,
     headers: { "fly-replay": `instance=${id};timeout=5s;fallback=force_self` },
+  });
+}
+
+function flyReplayToRegion(region: string): Response {
+  return new Response(null, {
+    status: 409,
+    headers: { "fly-replay": `region=${region};timeout=5s;fallback=force_self` },
   });
 }
 
@@ -244,12 +337,10 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
     return send(ws, { type: "error", message: "maxClients must be a positive number" });
   }
 
-  let code: string;
-  if (msg.room && ROOM_CODE_REGEX.test(msg.room)) {
-    code = rooms.has(msg.room) ? generateRoomCode() : msg.room;
-  } else {
-    code = generateRoomCode();
-  }
+  // Custom code accepted only if its format is valid AND (when running on Fly)
+  // its encoded region matches ours. Anything else falls back to a generated
+  // code so the holder is always reachable via direct region routing.
+  const code = (msg.room && tryUseCustomCode(msg.room)) ?? generateRoomCode();
   const origin = ws.data.origin || "unknown";
   const room: Room = { maxClients: msg.maxClients, origin, clients: new Map() };
   room.clients.set(msg.clientId, ws);
@@ -359,63 +450,89 @@ function fmt(n: number): string {
   return n.toLocaleString("en-US");
 }
 
-function statusPage(roomCount: number, clientCount: number, origins: Map<string, OriginStats>, ipFamily?: string): string {
-  pruneStats();
-
+function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFamily?: string): string {
   const uptimeMs = Date.now() - serverStartedAt;
-  const uptime = formatUptime(uptimeMs);
-  const uptimeDays = uptimeMs / 86_400_000;
-  const show30 = uptimeDays > 1;
-  const show365 = uptimeDays > 30;
-  const label30 = `${Math.min(Math.floor(uptimeDays), 30)}d`;
-  const label365 = `${Math.min(Math.floor(uptimeDays), 365)}d`;
-
-  // Collect all known origins (live + historical)
-  const allOrigins = new Set([...origins.keys(), ...stats.keys()]);
-
   const isLocalOrigin = (o: string) => /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/.test(o);
-  const hasLocal = Array.from(allOrigins).some(isLocalOrigin);
 
-  // Compute non-local counts for the header
-  let publicRooms = 0, publicClients = 0;
-  for (const [origin, s] of origins) {
-    if (!isLocalOrigin(origin)) { publicRooms += s.rooms; publicClients += s.clients; }
+  // Merge per-machine origins into a cluster view. Live counts aggregate cleanly
+  // (sum of right-now numbers); since-boot totals are summed too — slightly
+  // lossy when machines have different uptimes, but consistent with how we
+  // already frame the data.
+  const cluster = new Map<string, OriginAgg>();
+  function addOrigin(name: string, agg: OriginAgg) {
+    const e = cluster.get(name) ?? { live: { rooms: 0, clients: 0 }, totals: { connections: 0, rooms: 0 } };
+    e.live.rooms += agg.live.rooms;
+    e.live.clients += agg.live.clients;
+    e.totals.connections += agg.totals.connections;
+    e.totals.rooms += agg.totals.rooms;
+    cluster.set(name, e);
   }
+  const selfOrigins = buildOriginAggForSelf(origins);
+  for (const [n, a] of Object.entries(selfOrigins)) addOrigin(n, a);
+  for (const p of peers) for (const [n, a] of Object.entries(p.stats.origins)) addOrigin(n, a);
 
-  let originsHtml = "";
-  if (allOrigins.size > 0) {
-    const rows = Array.from(allOrigins)
-      .map((origin) => ({ origin, live: origins.get(origin), periods: getStatsPeriods(origin) }))
-      .sort((a, b) => (b.live?.clients ?? 0) - (a.live?.clients ?? 0) || b.periods.days365.connections - a.periods.days365.connections)
-      .map(({ origin, live, periods: p }) => {
-        const name = origin.replace(/^https?:\/\//, "");
-        const liveLabel = live
-          ? `<span class="badge">${live.rooms} room${live.rooms !== 1 ? "s" : ""}, ${live.clients} client${live.clients !== 1 ? "s" : ""}</span>`
-          : '';
-        const h30 = show30 ? `<th>${label30}</th>` : "";
-        const h365 = show365 ? `<th>${label365}</th>` : "";
-        const c30 = (s: DayStats) => show30 ? `<td>${fmt(s.connections)}</td>` : "";
-        const c365 = (s: DayStats) => show365 ? `<td>${fmt(s.connections)}</td>` : "";
-        const r30 = (s: DayStats) => show30 ? `<td>${fmt(s.rooms)}</td>` : "";
-        const r365 = (s: DayStats) => show365 ? `<td>${fmt(s.rooms)}</td>` : "";
-        const isLocal = isLocalOrigin(origin);
-        const favicon = origin.startsWith("https://")
-          ? `<img class="ofav" src="${origin}/favicon.ico">`
-          : '';
-        return `<div class="origin"${isLocal ? ' data-local' : ''}>
-  <div class="oh"><span class="on">${favicon}<span class="on-text">${name}</span></span>${liveLabel}</div>
-  <table>
-    <thead><tr><th></th><th>24h</th>${h30}${h365}</tr></thead>
-    <tbody>
-      <tr><td>Connections</td><td>${fmt(p.day1.connections)}</td>${c30(p.days30)}${c365(p.days365)}</tr>
-      <tr><td>Rooms</td><td>${fmt(p.day1.rooms)}</td>${r30(p.days30)}${r365(p.days365)}</tr>
-    </tbody>
-  </table>
+  const hasLocal = Array.from(cluster.keys()).some(isLocalOrigin);
+
+  let allRooms = 0, allClients = 0, publicRooms = 0, publicClients = 0;
+  for (const [name, agg] of cluster) {
+    allRooms += agg.live.rooms;
+    allClients += agg.live.clients;
+    if (!isLocalOrigin(name)) {
+      publicRooms += agg.live.rooms;
+      publicClients += agg.live.clients;
+    }
+  }
+  const machineCount = peers.length + 1;
+
+  // Origin rows: filled dot when live, hollow when only since-boot.
+  const originRows = Array.from(cluster)
+    .sort((a, b) => b[1].live.clients - a[1].live.clients || b[1].totals.connections - a[1].totals.connections)
+    .map(([name, agg]) => {
+      const display = name.replace(/^https?:\/\//, "");
+      const local = isLocalOrigin(name);
+      const isLive = agg.live.clients > 0 || agg.live.rooms > 0;
+      const mark = isLive ? "●" : "○";
+      const liveText = `${fmt(agg.live.clients)}c · ${fmt(agg.live.rooms)}r`;
+      const totalsText = agg.totals.connections === 0 && agg.totals.rooms === 0
+        ? "no traffic yet"
+        : `${fmt(agg.totals.connections)} conn · ${fmt(agg.totals.rooms)} room${agg.totals.rooms !== 1 ? "s" : ""} since boot`;
+      return `<div class="row origin${isLive ? "" : " idle"}"${local ? " data-local" : ""}>
+  <span class="mark">${mark}</span>
+  <span class="o-name">${display}</span>
+  <span class="o-live">${liveText}</span>
+  <span class="o-totals">${totalsText}</span>
 </div>`;
-      })
-      .join("");
-    originsHtml = rows;
-  }
+    })
+    .join("");
+
+  // Machine rows: current first with filled dot, peers below as links.
+  const shortenId = (id: string) => (id.length > 10 ? id.slice(0, 6) : id);
+  const selfId = INSTANCE_ID ? shortenId(INSTANCE_ID) : "local";
+  const selfMeta = [REGION, formatUptime(uptimeMs), ipFamily?.toLowerCase()].filter(Boolean).join(" · ");
+  let selfRoomCount = 0, selfClientCount = 0;
+  for (const s of origins.values()) { selfRoomCount += s.rooms; selfClientCount += s.clients; }
+  const selfRow = `<div class="row machine current">
+  <span class="mark">●</span>
+  <span class="m-id">${selfId}</span>
+  <span class="m-meta">${selfMeta}</span>
+  <span class="m-counts">${fmt(selfClientCount)}c · ${fmt(selfRoomCount)}r</span>
+  <span class="m-arrow"></span>
+</div>`;
+  const peerRows = peers
+    .slice()
+    .sort((a, b) => b.stats.clients - a.stats.clients || b.stats.rooms - a.stats.rooms)
+    .map(({ stats: p, link }) => {
+      const idShort = p.instance ? shortenId(p.instance) : "peer";
+      const meta = [p.region, formatUptime(p.uptimeMs)].filter(Boolean).join(" · ");
+      return `<a class="row machine" href="${link}">
+  <span class="mark">○</span>
+  <span class="m-id">${idShort}</span>
+  <span class="m-meta">${meta}</span>
+  <span class="m-counts">${fmt(p.clients)}c · ${fmt(p.rooms)}r</span>
+  <span class="m-arrow">→</span>
+</a>`;
+    })
+    .join("");
 
   return `<!DOCTYPE html>
 <html lang="en">
@@ -424,79 +541,210 @@ function statusPage(roomCount: number, clientCount: number, origins: Map<string,
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}">
 <title>Party-Sockets</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
+  :root {
+    --bg: #0a0a0a;
+    --fg: #ededed;
+    --muted: #888;
+    --dim: #555;
+    --faint: #2a2a2a;
+    --rule: #161616;
+    --accent: #4ade80;
+  }
   * { margin: 0; box-sizing: border-box; }
-  body { font-family: -apple-system, system-ui, sans-serif; background: #0f0f0f; color: #e0e0e0; display: flex; justify-content: center; align-items: center; min-height: 100vh; padding: 0.75rem; }
-  .card { background: #1a1a1a; border: 1px solid #2a2a2a; border-radius: 12px; padding: 1.25rem; max-width: 420px; width: 100%; }
-  h1 { font-size: 1.4rem; }
-  .header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.25rem; }
-  .status { display: flex; align-items: center; gap: 0.4rem; color: #4ade80; font-size: 0.8rem; white-space: nowrap; }
-  .dot { width: 8px; height: 8px; background: #4ade80; border-radius: 50%; box-shadow: 0 0 6px #4ade80; flex-shrink: 0; }
-  .uptime { color: #555; font-size: 0.75rem; margin-bottom: 1.25rem; }
-  .live { display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; margin-bottom: 1rem; }
-  .stat { background: #222; border-radius: 8px; padding: 0.75rem; text-align: center; }
-  .sv { font-size: 1.5rem; font-weight: 700; color: #fff; }
-  .sl { font-size: 0.7rem; color: #888; margin-top: 0.15rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  .origin { background: #161616; border: 1px solid #222; border-radius: 8px; padding: 0.75rem; margin-bottom: 0.5rem; overflow: hidden; }
-  .oh { display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.4rem; gap: 0.5rem; min-width: 0; }
-  .on { color: #fff; font-weight: 600; font-size: 0.85rem; display: flex; align-items: center; gap: 0.4rem; min-width: 0; overflow: hidden; }
-  .on-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .ofav { width: 14px; height: 14px; border-radius: 2px; flex-shrink: 0; }
-  .badge { font-size: 0.7rem; color: #4ade80; white-space: nowrap; flex-shrink: 0; }
-  .badge.off { color: #555; }
-  table { width: 100%; border-collapse: collapse; font-size: 0.8rem; font-variant-numeric: tabular-nums; }
-  th { color: #555; font-weight: 500; text-align: right; padding: 0 0 0.2rem; font-size: 0.65rem; text-transform: uppercase; letter-spacing: 0.05em; }
-  th:first-child { text-align: left; }
-  td { padding: 0.15rem 0; color: #ccc; }
-  td:first-child { color: #666; }
-  td:nth-child(n+2) { text-align: right; }
-  .footer { display: flex; justify-content: space-between; margin-top: 1rem; }
-  a { color: #888; font-size: 0.75rem; text-decoration: none; }
-  a:hover { color: #bbb; }
-  .ver { color: #555; font-size: 0.75rem; }
-  #test-section { margin-top: 1rem; }
-  #test-btn { background: #222; border: 1px solid #333; color: #ccc; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-size: 0.8rem; width: 100%; }
-  #test-btn:hover { background: #2a2a2a; border-color: #444; }
-  #test-btn:disabled { opacity: 0.5; cursor: default; }
-  #test-chart { width: 100%; height: 100px; margin-top: 0.75rem; display: none; }
-  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.5rem; margin-top: 0.5rem; font-size: 0.75rem; text-align: center; }
-  .ts { background: #222; border-radius: 6px; padding: 0.4rem; }
-  .ts-val { color: #fff; font-weight: 600; }
-  .ts-label { color: #666; font-size: 0.6rem; text-transform: uppercase; margin-top: 0.1rem; }
-  .toggle { display: flex; align-items: center; gap: 0.5rem; font-size: 0.75rem; color: #666; margin-bottom: 0.75rem; cursor: pointer; user-select: none; }
-  .toggle input { display: none; }
-  .toggle-track { width: 28px; height: 16px; background: #333; border-radius: 8px; position: relative; transition: background 0.2s; flex-shrink: 0; }
-  .toggle input:checked + .toggle-track { background: #4ade80; }
-  .toggle-track::after { content: ''; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; background: #fff; border-radius: 50%; transition: transform 0.2s; }
-  .toggle input:checked + .toggle-track::after { transform: translateX(12px); }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body {
+    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
+    background: var(--bg);
+    color: var(--fg);
+    font-size: 13px;
+    line-height: 1.6;
+    font-weight: 400;
+    font-feature-settings: 'tnum' 1;
+    display: flex;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 3rem 1.5rem 4rem;
+  }
+  main { width: 100%; max-width: 540px; animation: fade 0.3s ease-out; }
+  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+
+  .head {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    padding-bottom: 0.85rem;
+    border-bottom: 1px solid var(--rule);
+    margin-bottom: 1.5rem;
+  }
+  .head h1 { font-size: 13px; font-weight: 500; color: var(--fg); }
+  .head h1 .sep { color: var(--faint); margin: 0 0.4rem; }
+  .head h1 .live-tag { color: var(--accent); }
+  .head .ver { font-size: 11px; color: var(--dim); }
+
+  section { margin-bottom: 1.75rem; }
+  .section-h {
+    font-size: 11px;
+    color: var(--dim);
+    margin-bottom: 0.5rem;
+    font-weight: 400;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  .section-h .lbl { display: inline-flex; align-items: baseline; gap: 0.4rem; }
+  .section-h .lbl::before { content: '#'; color: var(--faint); }
+
+  .kv {
+    display: grid;
+    grid-template-columns: 6rem auto;
+    gap: 0.15rem 1rem;
+    padding-left: 1rem;
+  }
+  .kv .k { color: var(--muted); }
+  .kv .num { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+
+  .row {
+    display: grid;
+    align-items: baseline;
+    column-gap: 0.75rem;
+    padding: 0.55rem 1rem;
+    text-decoration: none;
+    color: inherit;
+    margin: 0 -1rem;
+  }
+  .row + .row { border-top: 1px solid var(--rule); }
+  .mark { color: var(--accent); font-size: 14px; line-height: 1; }
+  .row.idle .mark, .row.machine:not(.current) .mark { color: var(--faint); }
+
+  .row.origin {
+    grid-template-columns: 1ch 1fr auto;
+    row-gap: 0.1rem;
+  }
+  .o-name { color: var(--fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .o-live { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .row.idle .o-live { color: var(--dim); }
+  .o-totals { grid-column: 2 / span 2; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+
+  .row.machine {
+    grid-template-columns: 1ch auto 1fr auto 1ch;
+    align-items: center;
+  }
+  .m-id { color: var(--fg); font-weight: 500; }
+  .m-meta { color: var(--muted); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-counts { color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .m-arrow { color: var(--faint); text-align: right; }
+  .row.machine.current { cursor: default; }
+  a.row.machine { transition: background 0.12s; }
+  a.row.machine:hover { background: rgba(255,255,255,0.02); }
+  a.row.machine:hover .m-arrow { color: var(--muted); }
+
+  .lt { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 11px; color: var(--dim); cursor: pointer; user-select: none; }
+  .lt input { display: none; }
+  .lt-box { width: 12px; height: 12px; border: 1px solid var(--faint); position: relative; flex-shrink: 0; }
+  .lt input:checked + .lt-box { border-color: var(--accent); }
+  .lt input:checked + .lt-box::after {
+    content: '';
+    position: absolute;
+    inset: 2px;
+    background: var(--accent);
+  }
+  .lt:hover .lt-box { border-color: var(--muted); }
   html.hide-local [data-local] { display: none; }
-  @media (min-width: 500px) { .card { padding: 2rem; max-width: 540px; } }
-  @media (max-width: 360px) {
+  .o-empty { color: var(--dim); font-size: 12px; padding: 0.5rem 1rem; }
+
+  .test {
+    background: transparent;
+    border: 1px solid var(--faint);
+    color: var(--muted);
+    padding: 0.65rem 1rem;
+    font-family: inherit;
+    font-size: 12px;
+    cursor: pointer;
+    width: 100%;
+    text-align: left;
+    font-weight: 400;
+    transition: border-color 0.15s, color 0.15s;
+    position: relative;
+  }
+  .test:hover { border-color: var(--muted); color: var(--fg); }
+  .test:disabled { opacity: 0.6; cursor: default; }
+  .test::after { content: '→'; position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); color: var(--faint); }
+  .test:hover::after { color: var(--muted); }
+  .test:disabled::after { display: none; }
+
+  #test-chart { width: 100%; height: 100px; margin-top: 0.75rem; display: none; }
+  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.4rem; margin-top: 0.5rem; font-size: 11px; text-align: center; }
+  .ts { border: 1px solid var(--rule); padding: 0.4rem; }
+  .ts-val { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .ts-label { color: var(--dim); font-size: 10px; margin-top: 0.1rem; }
+
+  .foot {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding-top: 0.85rem;
+    margin-top: 1.5rem;
+    border-top: 1px solid var(--rule);
+    font-size: 11px;
+    color: var(--dim);
+  }
+  .foot a { color: var(--muted); text-decoration: none; }
+  .foot a:hover { color: var(--fg); }
+
+  @media (max-width: 380px) {
+    body { padding: 2rem 1rem; }
     #test-stats { grid-template-columns: 1fr 1fr; }
-    table { font-size: 0.7rem; }
   }
 </style>
 <script>if(localStorage.getItem('show-local')!=='1')document.documentElement.classList.add('hide-local');</script>
 </head>
 <body>
-<div class="card" id="card">
-  <div class="header">
-    <h1>Party-Sockets</h1>
-    <div class="status"><span class="dot"></span> Online</div>
+<main>
+  <div class="head">
+    <h1>party-sockets <span class="sep">·</span> <span class="live-tag">online</span></h1>
+    <span class="ver">v${VERSION}</span>
   </div>
-  <div class="uptime">Uptime ${uptime}${REGION ? ` · ${REGION}` : ''}${INSTANCE_ID ? ` · ${INSTANCE_ID.slice(0, 6)}` : ''}${ipFamily ? ` · ${ipFamily}` : ''}</div>
-  <div class="live">
-    <div class="stat"><div class="sv" data-all="${roomCount}" data-public="${publicRooms}">${publicRooms}</div><div class="sl">Rooms</div></div>
-    <div class="stat"><div class="sv" data-all="${clientCount}" data-public="${publicClients}">${publicClients}</div><div class="sl">Clients</div></div>
-  </div>
-  ${hasLocal ? '<label class="toggle"><input type="checkbox" id="show-local"><span class="toggle-track"></span> Show local origins</label>' : ''}${originsHtml}
-  <div id="test-section">
-    <button id="test-btn">Test Latency</button>
+
+  <section data-refresh="live">
+    <div class="section-h"><span class="lbl">live</span></div>
+    <div class="kv">
+      <span class="k">clients</span>
+      <span class="num sn" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span>
+      <span class="k">rooms</span>
+      <span class="num sn" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span>
+      <span class="k">machines</span>
+      <span class="num">${machineCount}</span>
+    </div>
+  </section>
+
+  <section data-refresh="machines">
+    <div class="section-h"><span class="lbl">machines</span></div>
+    ${selfRow}${peerRows}
+  </section>
+
+  <section data-refresh="origins">
+    <div class="section-h">
+      <span class="lbl">origins</span>
+      ${hasLocal ? '<label class="lt"><input type="checkbox" id="show-local"><span class="lt-box"></span><span>show local</span></label>' : ''}
+    </div>
+    ${cluster.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
+  </section>
+
+  <section>
+    <button class="test" id="test-btn">test latency</button>
     <canvas id="test-chart"></canvas>
     <div id="test-stats"></div>
+  </section>
+
+  <div class="foot">
+    <a href="https://github.com/tim4724/Party-Sockets">github</a>
+    <span>v${VERSION}</span>
   </div>
-  <div class="footer"><a href="https://github.com/tim4724/Party-Sockets">GitHub</a> <span class="ver">${VERSION}</span></div>
-</div>
+</main>
 <script>
 function runTest() {
   const btn = document.getElementById('test-btn');
@@ -505,10 +753,10 @@ function runTest() {
   const ctx = canvas.getContext('2d');
 
   btn.disabled = true;
-  btn.textContent = 'Connecting...';
+  btn.textContent = 'connecting…';
   canvas.style.display = 'block';
   statsEl.style.display = 'grid';
-  statsEl.innerHTML = ['Min','Avg','Max','Jitter'].map(l => '<div class="ts"><div class="ts-val" style="color:#555">-</div><div class="ts-label">' + l + '</div></div>').join('');
+  statsEl.innerHTML = ['min','avg','p95','jitter'].map(l => '<div class="ts"><div class="ts-val" style="color:#555">—</div><div class="ts-label">' + l + '</div></div>').join('');
 
   const dpr = window.devicePixelRatio || 1;
   const rect = canvas.getBoundingClientRect();
@@ -604,17 +852,18 @@ function runTest() {
 
     statsEl.style.display = 'grid';
     statsEl.innerHTML = [
-      ['Min', min, min.toFixed(1) + 'ms'],
-      ['Avg', avg, avg.toFixed(1) + 'ms'],
-      ['P95', p95, p95.toFixed(1) + 'ms'],
-      ['Jitter', jitter, jitter.toFixed(1) + 'ms'],
+      ['min', min, min.toFixed(1) + 'ms'],
+      ['avg', avg, avg.toFixed(1) + 'ms'],
+      ['p95', p95, p95.toFixed(1) + 'ms'],
+      ['jitter', jitter, jitter.toFixed(1) + 'ms'],
     ].map(([l, n, v]) => '<div class="ts"><div class="ts-val" style="color:' + getColor(n) + '">' + v + '</div><div class="ts-label">' + l + '</div></div>').join('');
   }
 
   function finish() {
     ws.close();
     btn.disabled = false;
-    btn.textContent = 'Test Again';
+    btn.textContent = 'test again';
+    testActive = false;
   }
 
   ws.onopen = () => {
@@ -629,7 +878,7 @@ function runTest() {
         const elapsed = performance.now() - startTime;
         if (elapsed >= DURATION) { clearInterval(iv); finish(); return; }
         const remaining = Math.ceil((DURATION - elapsed) / 1000);
-        btn.textContent = 'Testing... ' + remaining + 's';
+        btn.textContent = 'testing… ' + remaining + 's';
         if (pending === null) {
           pending = performance.now();
           ws.send(JSON.stringify({ type: 'send', to: clientId, data: 'ping' }));
@@ -643,35 +892,55 @@ function runTest() {
       drawChart();
       showStats();
     } else if (msg.type === 'error') {
-      btn.textContent = 'Error: ' + msg.message;
+      btn.textContent = 'error: ' + msg.message;
       btn.disabled = false;
     }
   };
 
-  ws.onerror = () => { btn.textContent = 'Connection failed'; btn.disabled = false; };
+  ws.onerror = () => { btn.textContent = 'connection failed'; btn.disabled = false; };
 }
-document.getElementById('test-btn').addEventListener('click', function() { hasTestedOnce = true; runTest(); });
-document.querySelectorAll('.ofav').forEach(function(img) {
-  img.addEventListener('error', function() { this.style.display = 'none'; });
-});
-var hasTestedOnce = false;
-setInterval(function() { if (!hasTestedOnce) location.reload(); }, 5000);
-var showLocal = document.getElementById('show-local');
-if (showLocal) {
-  var root = document.documentElement;
-  if (localStorage.getItem('show-local') === '1') { showLocal.checked = true; root.classList.remove('hide-local'); }
-  function updateCounts(showAll) {
-    document.querySelectorAll('.sv[data-all]').forEach(function(el) {
-      el.textContent = showAll ? el.getAttribute('data-all') : el.getAttribute('data-public');
-    });
-  }
-  updateCounts(showLocal.checked);
-  showLocal.addEventListener('change', function() {
-    root.classList.toggle('hide-local', !this.checked);
-    localStorage.setItem('show-local', this.checked ? '1' : '0');
-    updateCounts(this.checked);
+var testActive = false;
+document.getElementById('test-btn').addEventListener('click', function() { testActive = true; runTest(); });
+
+var root = document.documentElement;
+function showLocalChecked() { return localStorage.getItem('show-local') === '1'; }
+function updateCounts() {
+  var showAll = showLocalChecked();
+  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
+    el.textContent = showAll ? el.getAttribute('data-all') : el.getAttribute('data-public');
   });
 }
+function syncToggle() {
+  var t = document.getElementById('show-local');
+  if (t) t.checked = showLocalChecked();
+}
+document.addEventListener('change', function(e) {
+  if (e.target && e.target.id === 'show-local') {
+    var on = e.target.checked;
+    root.classList.toggle('hide-local', !on);
+    localStorage.setItem('show-local', on ? '1' : '0');
+    updateCounts();
+  }
+});
+syncToggle();
+updateCounts();
+
+async function refresh() {
+  if (testActive) return;
+  try {
+    var r = await fetch(location.href, { cache: 'no-store' });
+    if (!r.ok) return;
+    var html = await r.text();
+    var doc = new DOMParser().parseFromString(html, 'text/html');
+    document.querySelectorAll('section[data-refresh]').forEach(function(sec) {
+      var fresh = doc.querySelector('section[data-refresh="' + sec.dataset.refresh + '"]');
+      if (fresh) sec.innerHTML = fresh.innerHTML;
+    });
+    syncToggle();
+    updateCounts();
+  } catch (e) {}
+}
+setInterval(refresh, 30000);
 </script>
 </body>
 </html>`;
@@ -694,16 +963,51 @@ const server = Bun.serve({
       }
       // Unknown ID — stale URL. Fall through to local handling.
     }
-    if (!requestedInstance) {
-      const pathRoomMatch = url.pathname.match(/^\/([A-Z0-9]{4,8})$/);
-      const requestedRoom = pathRoomMatch?.[1];
-      if (requestedRoom && !rooms.has(requestedRoom)) {
-        const peerInstance = await findRoomOnPeers(requestedRoom);
+    // Pull a candidate room code out of either /<code> (WS upgrade) or
+    // /room/<code> (HTTP existence check). Either path participates in
+    // routing.
+    let candidateCode: string | null = null;
+    const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{4,8})$/);
+    if (pathRoomMatch) candidateCode = pathRoomMatch[1];
+    else {
+      const apiRoomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
+      if (apiRoomMatch) candidateCode = decodeURIComponent(apiRoomMatch[1]);
+    }
+
+    if (candidateCode && !requestedInstance) {
+      // New-format codes self-route: decode the region from the code itself.
+      // Only act on this when we know our own region (REGION_IDX set) — local
+      // dev shouldn't emit fly-replay headers.
+      const decoded = tryDecodeRoomCode(candidateCode);
+      if (REGION_IDX !== null && decoded?.region && decoded.region !== REGION) {
+        return flyReplayToRegion(decoded.region);
+      }
+      // Same region or legacy/custom code: fall through to peer probe so the
+      // holder is found regardless of format.
+      if (!rooms.has(candidateCode)) {
+        const peerInstance = await findRoomOnPeers(candidateCode);
         if (peerInstance) return flyReplayToInstance(peerInstance);
       }
     }
     if (url.pathname === "/health") {
       return new Response(JSON.stringify({ status: "ok" }), {
+        headers: {
+          "Content-Type": "application/json",
+          "Access-Control-Allow-Origin": "*",
+        },
+      });
+    }
+    if (url.pathname === "/stats") {
+      const { roomCount, clientCount, origins } = getOriginStats();
+      const payload: PeerStats = {
+        instance: INSTANCE_ID,
+        region: REGION,
+        uptimeMs: Date.now() - serverStartedAt,
+        rooms: roomCount,
+        clients: clientCount,
+        origins: buildOriginAggForSelf(origins),
+      };
+      return new Response(JSON.stringify(payload), {
         headers: {
           "Content-Type": "application/json",
           "Access-Control-Allow-Origin": "*",
@@ -735,10 +1039,11 @@ const server = Bun.serve({
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
-      const { roomCount, clientCount, origins } = getOriginStats();
+      const { origins } = getOriginStats();
       const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0].trim();
       const ipFamily = forwarded?.includes(":") && !forwarded.startsWith("::ffff:") ? "IPv6" : "IPv4";
-      return new Response(statusPage(roomCount, clientCount, origins, ipFamily), {
+      const peers = await fetchPeerStats();
+      return new Response(statusPage(origins, peers, ipFamily), {
         headers: { "Content-Type": "text/html" },
       });
     }

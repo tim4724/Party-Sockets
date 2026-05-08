@@ -43,14 +43,20 @@ When deployed across multiple instances behind a single anycast hostname, the up
 // Pin to a known instance (from a previous `created` response)
 new WebSocket("wss://ws.couch-games.com/?instance=00bb33ff");
 
-// Manual code entry: server reads /<code> from the path, probes peers via
-// internal DNS, and redirects to the holder.
-new WebSocket("wss://ws.couch-games.com/A3KX");
+// Manual code entry: server reads /<code> from the path. Room codes encode
+// their home region in the top 5 bits, so the receiving machine fly-replays
+// directly to that region — no peer probe needed. Legacy or custom codes
+// fall back to a peer probe via internal DNS.
+new WebSocket("wss://ws.couch-games.com/Mu5h6Z");
 ```
 
-Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` helper in `server.ts` to target a different platform.
+Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` / `flyReplayToRegion` helpers in `server.ts` to target a different platform.
 
 Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring — clients get a clean "Room not found" on join instead of a connection failure.
+
+### Room code format
+
+Server-generated codes are 6-char base58 (Bitcoin alphabet — no `0`, `O`, `I`, `l`). When `FLY_REGION` is set, the top 5 bits encode the region index from `regions.ts`, allowing any peer to route a `/<code>` or `/room/<code>` request directly to the home region without DNS probing. Locally, the full 35-bit space is random and region routing is skipped.
 
 ### Create a room
 
@@ -58,10 +64,10 @@ Stale `?instance=` values (machine replaced or destroyed) fall through to local 
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
 
 // Or request a specific room code (e.g. to restore a room after server restart)
-ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "A3KX" }));
+ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4, room: "Mu5h6Z" }));
 ```
 
-If the preferred `room` code is a valid A-Z0-9 string (4–8 chars) and not already taken, it will be used. Otherwise the server assigns a fresh code.
+A custom `room` code is accepted only when (a) it's a valid 6-char base58 string, (b) on Fly, its encoded region matches the receiving machine's region (so the room stays reachable via direct routing), and (c) it isn't already taken. Otherwise the server assigns a fresh code silently.
 
 ### Join a room
 
@@ -161,7 +167,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be A-Z0-9, 4–8 chars. |
+| `create` | `clientId`, `maxClients`, `room?` | Create a new room. Optional `room` must be a valid 6-char base58 string and (on Fly) encode the receiving machine's region. |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 

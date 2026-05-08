@@ -171,4 +171,26 @@ describe.skipIf(!LIVE)("live", () => {
     expect(joined.room).toBe(created.room);
     expect(joined.clients).toContain(guestId);
   });
+
+  test("/room/<code> works without ?instance= for new-format codes", async () => {
+    const ids = getInstanceIds();
+    if (ids.length < 2) {
+      console.log("[live] single-machine deploy — skipping cross-machine /room assertion");
+      return;
+    }
+
+    // Mint a room on a specific machine, then GET /room/<code> from the
+    // anycast endpoint — the receiving machine should decode the region and
+    // either serve locally or fly-replay to the home region.
+    const [hostInstance] = ids;
+    const ws = track(await connect(hostInstance));
+    sendMsg(ws, { type: "create", clientId: "host-" + rand(), maxClients: 2 });
+    const created = await waitForType(ws, "created");
+    expect(created.room).toHaveLength(6);
+
+    const res = await fetch(`${HTTP_URL}/room/${created.room}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.clients).toBe(1);
+  });
 });
