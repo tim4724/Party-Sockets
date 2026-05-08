@@ -9,7 +9,7 @@ mock.module("node:dns/promises", () => ({
   },
 }));
 
-import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, packRoomCodeValue } from "./server";
+import { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, packRoomCodeValue, findRoomOnPeers } from "./server";
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGION_TO_IDX } from "./regions";
 
@@ -653,6 +653,28 @@ describe("peer probe", () => {
     expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">1<\/span>/);
     expect(html).not.toContain('href="?instance=');
     expect(html).toContain('class="row machine current"');
+  });
+
+  test("findRoomOnPeers filters to the requested region", async () => {
+    // abc123=fra has the room, def456=iad has it too. With region="fra" we
+    // should only probe abc123. To prove def456 isn't probed, we make def456
+    // respond with the room being there too — if filtering is broken and we
+    // probe both, Promise order would still typically pick abc123 by index,
+    // so flip the asymmetry: only def456 returns 200, abc123 returns 404.
+    // With a working same-region filter, we never see def456 -> result is null.
+    peerStatus.set("abc123", 404);
+    peerStatus.set("def456", 200);
+
+    const result = await findRoomOnPeers("anycode", "fra");
+    expect(result).toBeNull();
+  });
+
+  test("findRoomOnPeers probes everywhere when region is empty", async () => {
+    peerStatus.set("abc123", 404);
+    peerStatus.set("def456", 200);
+
+    const result = await findRoomOnPeers("anycode", "");
+    expect(result).toBe("def456");
   });
 });
 
