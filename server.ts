@@ -140,7 +140,12 @@ export function tryDecodeRoomCode(code: string): DecodedCode | null {
 // DNS to enumerate peers, probe each via 6PN, and fly-replay to whichever one
 // holds the room. No-op when FLY_APP_NAME is unset (local dev / non-Fly).
 
-async function getPeerInstanceIds(): Promise<string[]> {
+interface Peer {
+  id: string;
+  region: string;
+}
+
+async function getPeers(): Promise<Peer[]> {
   const app = process.env.FLY_APP_NAME ?? "";
   if (!app) return [];
   const dns = await import("node:dns/promises");
@@ -148,18 +153,22 @@ async function getPeerInstanceIds(): Promise<string[]> {
     const records = await dns.resolveTxt(`vms.${app}.internal`);
     return records.flat().join("")
       .split(",")
-      .map(s => s.trim().split(" ")[0])
-      .filter((id) => id && id !== INSTANCE_ID);
+      .map((s) => {
+        const [id, region] = s.trim().split(" ");
+        return { id, region: region ?? "" };
+      })
+      .filter((p) => p.id && p.id !== INSTANCE_ID);
   } catch {
     return [];
   }
 }
 
-async function findRoomOnPeers(code: string): Promise<string | null> {
+async function findRoomOnPeers(code: string, opts: { region?: string } = {}): Promise<string | null> {
   const app = process.env.FLY_APP_NAME ?? "";
-  const peers = await getPeerInstanceIds();
+  let peers = await getPeers();
+  if (opts.region) peers = peers.filter((p) => p.region === opts.region);
   if (peers.length === 0) return null;
-  const probes = peers.map(async (id) => {
+  const probes = peers.map(async ({ id }) => {
     try {
       const res = await fetch(
         `http://${id}.vm.${app}.internal:${PORT}/room/${encodeURIComponent(code)}`,
@@ -176,8 +185,8 @@ async function findRoomOnPeers(code: string): Promise<string | null> {
 async function isKnownInstance(id: string): Promise<boolean> {
   // Outside Fly we can't validate — trust the input so local/test envs work.
   if (!process.env.FLY_APP_NAME) return true;
-  const peers = await getPeerInstanceIds();
-  return peers.includes(id);
+  const peers = await getPeers();
+  return peers.some((p) => p.id === id);
 }
 
 interface OriginAgg {
@@ -219,9 +228,9 @@ async function fetchPeerStats(): Promise<PeerView[]> {
   } else {
     const app = process.env.FLY_APP_NAME ?? "";
     if (!app) return [];
-    const peers = await getPeerInstanceIds();
+    const peers = await getPeers();
     if (peers.length === 0) return [];
-    targets = peers.map((id) => ({
+    targets = peers.map(({ id }) => ({
       url: `http://${id}.vm.${app}.internal:${PORT}/stats`,
       link: `?instance=${encodeURIComponent(id)}`,
     }));
@@ -978,10 +987,16 @@ const server = Bun.serve({
       if (REGION_IDX !== null && decoded?.region && decoded.region !== REGION) {
         return flyReplayToRegion(decoded.region);
       }
-      // Same region or legacy/custom code: fall through to peer probe so the
-      // holder is found regardless of format.
+      // Same region or legacy/non-decodable code: fall through to peer probe.
+      // For same-region new-format codes we know the room can only live on a
+      // sibling in our region — skip cross-region peers. For legacy codes the
+      // region is unknown, so probe everyone.
       if (!rooms.has(candidateCode)) {
-        const peerInstance = await findRoomOnPeers(candidateCode);
+        const sameRegion = decoded?.region === REGION && REGION !== "";
+        const peerInstance = await findRoomOnPeers(
+          candidateCode,
+          sameRegion ? { region: REGION } : {},
+        );
         if (peerInstance) return flyReplayToInstance(peerInstance);
       }
     }
