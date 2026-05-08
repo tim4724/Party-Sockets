@@ -605,14 +605,32 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBe("instance=deadbeef;timeout=5s;fallback=force_self");
   });
 
-  test("?instance= with fly-replay-src skips replay (loop prevention)", async () => {
-    // When force_self fires, Fly sends the request back to us with
-    // fly-replay-src set. Re-emitting fly-replay would loop.
+  test("HTTP fallback (fly-replay-src + ?instance=) redirects to a clean URL", async () => {
+    // When force_self fires, Fly delivers the request back with
+    // fly-replay-src. For plain HTTP we 302 to the same URL with the stale
+    // ?instance= stripped, so bookmarks/QRs heal naturally.
     const res = await origFetch(`http://localhost:${server.port}/health?instance=other`, {
+      redirect: "manual",
       headers: { "fly-replay-src": "instance=other;t=1" },
     });
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toBe(`http://localhost:${server.port}/health`);
     expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
+  test("WS upgrade with fly-replay-src falls through (no redirect)", async () => {
+    // WS clients can't follow 302. The room-not-found path on join handles
+    // the stale-pin case for them; here we just verify we don't emit a
+    // redirect that would break the upgrade.
+    const res = await origFetch(`http://localhost:${server.port}/?instance=other`, {
+      redirect: "manual",
+      headers: {
+        "fly-replay-src": "instance=other;t=1",
+        "Upgrade": "websocket",
+      },
+    });
+    expect(res.status).not.toBe(302);
+    expect(res.headers.get("location")).toBeNull();
   });
 
   test("falls through when no peer holds the room", async () => {

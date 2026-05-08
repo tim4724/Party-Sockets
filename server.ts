@@ -964,8 +964,19 @@ const server = Bun.serve({
     // see it, we're the fallback target — don't re-emit a replay.
     const requestedInstance = url.searchParams.get("instance");
     const isReplayFallback = req.headers.has("fly-replay-src");
-    if (requestedInstance && requestedInstance !== INSTANCE_ID && !isReplayFallback) {
-      return flyReplayToInstance(requestedInstance);
+    if (requestedInstance && requestedInstance !== INSTANCE_ID) {
+      if (!isReplayFallback) {
+        return flyReplayToInstance(requestedInstance);
+      }
+      // Fallback target: the pinned machine is unreachable. For plain HTTP
+      // requests, redirect to a clean URL so a stale bookmark doesn't stay
+      // pinned. WS upgrades fall through to local handling — the user lands
+      // on a healthy machine and gets the usual "Room not found" on join.
+      const isUpgrade = req.headers.get("upgrade")?.toLowerCase() === "websocket";
+      if (!isUpgrade) {
+        url.searchParams.delete("instance");
+        return Response.redirect(url.toString(), 302);
+      }
     }
     // Pull a candidate room code out of either /<code> (WS upgrade) or
     // /room/<code> (HTTP existence check). Either path participates in
