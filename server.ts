@@ -505,18 +505,19 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
     })
     .join("");
 
-  // Machine rows: current first with filled dot, peers below as links.
+  // Machine rows: current first, peers below as links. Region · uptime sit
+  // beneath the id (full ipFamily lives in the splash; rows stay tight).
   const shortenId = (id: string) => (id.length > 10 ? id.slice(0, 6) : id);
   const selfId = INSTANCE_ID ? shortenId(INSTANCE_ID) : "local";
-  const selfMeta = [REGION, formatUptime(uptimeMs), ipFamily?.toLowerCase()].filter(Boolean).join(" · ");
+  const selfMetaRow = [REGION, formatUptime(uptimeMs)].filter(Boolean).join(" · ");
+  const selfMetaSplash = [formatUptime(uptimeMs), REGION, ipFamily?.toLowerCase()].filter(Boolean).join(" · ");
   let selfRoomCount = 0, selfClientCount = 0;
   for (const s of origins.values()) { selfRoomCount += s.rooms; selfClientCount += s.clients; }
   const selfRow = `<div class="row machine current">
   <span class="mark">●</span>
   <span class="m-id">${selfId}</span>
-  <span class="m-meta">${selfMeta}</span>
   <span class="m-counts">${fmt(selfClientCount)}c · ${fmt(selfRoomCount)}r</span>
-  <span class="m-arrow"></span>
+  <span class="m-meta">${selfMetaRow}</span>
 </div>`;
   const peerRows = peers
     .slice()
@@ -524,12 +525,11 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
     .map(({ stats: p, link }) => {
       const idShort = p.instance ? shortenId(p.instance) : "peer";
       const meta = [p.region, formatUptime(p.uptimeMs)].filter(Boolean).join(" · ");
-      return `<a class="row machine" href="${link}">
-  <span class="mark">○</span>
+      return `<a class="row machine peer" href="${link}">
+  <span class="mark">●</span>
   <span class="m-id">${idShort}</span>
-  <span class="m-meta">${meta}</span>
   <span class="m-counts">${fmt(p.clients)}c · ${fmt(p.rooms)}r</span>
-  <span class="m-arrow">→</span>
+  <span class="m-meta">${meta}</span>
 </a>`;
     })
     .join("");
@@ -546,13 +546,14 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
 <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
 <style>
   :root {
-    --bg: #0a0a0a;
-    --fg: #ededed;
-    --muted: #888;
-    --dim: #555;
-    --faint: #2a2a2a;
-    --rule: #161616;
-    --accent: #4ade80;
+    --bg: #050b14;
+    --panel: #0c1622;
+    --cyan: #7dd3fc;
+    --green: #4ade80;
+    --fg: #e2e8f0;
+    --muted: #64748b;
+    --dim: #334155;
+    --faint: #1e293b;
   }
   * { margin: 0; box-sizing: border-box; }
   html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
@@ -560,143 +561,183 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
     font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
     background: var(--bg);
     color: var(--fg);
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 12px;
+    line-height: 1.5;
     font-weight: 400;
     font-feature-settings: 'tnum' 1;
     display: flex;
     justify-content: center;
     min-height: 100vh;
-    padding: 3rem 1.5rem 4rem;
+    padding: 1.5rem 1rem 2rem;
   }
-  main { width: 100%; max-width: 540px; animation: fade 0.3s ease-out; }
-  @keyframes fade { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: none; } }
+  main { width: 100%; max-width: 720px; animation: fade 0.25s ease-out; }
+  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
 
-  .head {
-    display: flex;
-    justify-content: space-between;
-    align-items: baseline;
-    padding-bottom: 0.85rem;
-    border-bottom: 1px solid var(--rule);
-    margin-bottom: 1.5rem;
+  /* ── splash ── */
+  .splash {
+    background: var(--panel);
+    border: 1px solid var(--cyan);
+    padding: 0.7rem 0.85rem;
+    margin-bottom: 0.6rem;
   }
-  .head h1 { font-size: 13px; font-weight: 500; color: var(--fg); }
-  .head h1 .sep { color: var(--faint); margin: 0 0.4rem; }
-  .head h1 .live-tag { color: var(--accent); }
-  .head .ver { font-size: 11px; color: var(--dim); }
-
-  section { margin-bottom: 1.75rem; }
-  .section-h {
-    font-size: 11px;
-    color: var(--dim);
-    margin-bottom: 0.5rem;
-    font-weight: 400;
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
+  .splash .row1 {
+    display: flex; justify-content: space-between; align-items: baseline;
+    color: var(--cyan); font-weight: 700;
+    margin-bottom: 0.15rem;
   }
-  .section-h .lbl { display: inline-flex; align-items: baseline; gap: 0.4rem; }
-  .section-h .lbl::before { content: '#'; color: var(--faint); }
-
-  .kv {
-    display: grid;
-    grid-template-columns: 6rem auto;
-    gap: 0.15rem 1rem;
-    padding-left: 1rem;
+  .splash h1 {
+    font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase;
+    font-weight: 700;
   }
-  .kv .k { color: var(--muted); }
-  .kv .num { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
+  .splash .ver { color: var(--cyan); font-weight: 400; font-size: 11px; }
+  .splash .row2 {
+    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0 0.6rem;
+    color: var(--muted); font-size: 11px;
+  }
+  .splash .row2 .ok { color: var(--green); }
+  .splash .row2 .self { color: var(--fg); }
+  .splash .stats {
+    display: flex; gap: 1.4rem; margin-top: 0.5rem;
+    padding-top: 0.5rem;
+    border-top: 1px dashed var(--dim);
+    font-size: 11px; flex-wrap: wrap;
+  }
+  .splash .stat { display: flex; gap: 0.4rem; }
+  .splash .stat .k { color: var(--muted); }
+  .splash .stat .num { color: var(--green); font-weight: 700; font-variant-numeric: tabular-nums; }
 
+  /* ── two panes ── */
+  .panes {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+    margin-bottom: 0.6rem;
+  }
+  @media (max-width: 600px) {
+    .panes { grid-template-columns: 1fr; }
+  }
+  .panel {
+    border: 1px solid var(--cyan);
+    background: var(--panel);
+    display: flex; flex-direction: column;
+    margin: 0;
+  }
+  .titlebar {
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.6rem;
+    font-size: 10px; font-weight: 700;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+    gap: 0.5rem;
+  }
+  .titlebar .meta { font-weight: 400; opacity: 0.75; }
+  .panel-c { padding: 0.5rem 0.6rem; flex: 1; }
+
+  /* ── rows (machines + origins) ── */
   .row {
-    display: grid;
+    display: grid; column-gap: 0.5rem;
+    padding: 0.35rem 0;
     align-items: baseline;
-    column-gap: 0.75rem;
-    padding: 0.55rem 1rem;
-    text-decoration: none;
-    color: inherit;
-    margin: 0 -1rem;
+    text-decoration: none; color: inherit;
   }
-  .row + .row { border-top: 1px solid var(--rule); }
-  .mark { color: var(--accent); font-size: 14px; line-height: 1; }
-  .row.idle .mark, .row.machine:not(.current) .mark { color: var(--faint); }
+  .row + .row { border-top: 1px dotted var(--dim); }
+  .mark { color: var(--green); font-size: 13px; line-height: 1; }
+  .row.idle .mark { color: var(--dim); }
+
+  .row.machine {
+    grid-template-columns: 1ch 1fr auto;
+    row-gap: 0.05rem;
+  }
+  .m-id { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .m-meta { color: var(--muted); font-size: 10px; grid-column: 2 / span 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .m-counts { color: var(--green); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .row.machine.peer .m-counts { color: var(--cyan); }
+  a.row.machine { transition: background 0.12s; cursor: pointer; }
+  a.row.machine:hover { background: rgba(125, 211, 252, 0.05); }
 
   .row.origin {
     grid-template-columns: 1ch 1fr auto;
-    row-gap: 0.1rem;
+    row-gap: 0.05rem;
   }
-  .o-name { color: var(--fg); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .o-live { color: var(--accent); white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .o-name { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+  .o-live { color: var(--green); white-space: nowrap; font-variant-numeric: tabular-nums; }
   .row.idle .o-live { color: var(--dim); }
-  .o-totals { grid-column: 2 / span 2; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
+  .o-totals { grid-column: 2 / span 2; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
 
-  .row.machine {
-    grid-template-columns: 1ch auto 1fr auto 1ch;
-    align-items: center;
+  .o-empty { color: var(--dim); font-size: 11px; padding: 0.4rem 0.2rem; }
+
+  /* ── localhost toggle (in titlebar) ── */
+  .lt {
+    display: inline-flex; align-items: center; gap: 0.3rem;
+    cursor: pointer; user-select: none;
+    color: var(--bg); font-weight: 700;
+    letter-spacing: 0.06em; font-size: 10px;
   }
-  .m-id { color: var(--fg); font-weight: 500; }
-  .m-meta { color: var(--muted); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .m-counts { color: var(--accent); font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .m-arrow { color: var(--faint); text-align: right; }
-  .row.machine.current { cursor: default; }
-  a.row.machine { transition: background 0.12s; }
-  a.row.machine:hover { background: rgba(255,255,255,0.02); }
-  a.row.machine:hover .m-arrow { color: var(--muted); }
-
-  .lt { display: inline-flex; align-items: center; gap: 0.5rem; font-size: 11px; color: var(--dim); cursor: pointer; user-select: none; }
   .lt input { display: none; }
-  .lt-box { width: 12px; height: 12px; border: 1px solid var(--faint); position: relative; flex-shrink: 0; }
-  .lt input:checked + .lt-box { border-color: var(--accent); }
+  .lt-box {
+    width: 9px; height: 9px;
+    border: 1px solid var(--bg); position: relative; flex-shrink: 0;
+  }
   .lt input:checked + .lt-box::after {
     content: '';
-    position: absolute;
-    inset: 2px;
-    background: var(--accent);
+    position: absolute; inset: 1px;
+    background: var(--bg);
   }
-  .lt:hover .lt-box { border-color: var(--muted); }
   html.hide-local [data-local] { display: none; }
-  .o-empty { color: var(--dim); font-size: 12px; padding: 0.5rem 1rem; }
+  .paused-tag { display: none; color: var(--muted); }
+  html.paused .paused-tag { display: inline; }
 
+  /* ── latency test ── */
   .test {
-    background: transparent;
-    border: 1px solid var(--faint);
-    color: var(--muted);
-    padding: 0.65rem 1rem;
+    background: var(--panel);
+    border: 1px solid var(--cyan);
+    color: var(--fg);
+    padding: 0.5rem 0.75rem;
     font-family: inherit;
-    font-size: 12px;
+    font-size: 11px;
     cursor: pointer;
     width: 100%;
     text-align: left;
-    font-weight: 400;
-    transition: border-color 0.15s, color 0.15s;
+    font-weight: 500;
+    transition: background 0.12s;
     position: relative;
+    margin-bottom: 0.6rem;
+    text-transform: lowercase;
+    letter-spacing: 0.04em;
   }
-  .test:hover { border-color: var(--muted); color: var(--fg); }
+  .test:hover { background: rgba(125, 211, 252, 0.05); }
   .test:disabled { opacity: 0.6; cursor: default; }
-  .test::after { content: '→'; position: absolute; right: 1rem; top: 50%; transform: translateY(-50%); color: var(--faint); }
-  .test:hover::after { color: var(--muted); }
+  .test::after { content: '→'; position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--cyan); }
   .test:disabled::after { display: none; }
 
-  #test-chart { width: 100%; height: 100px; margin-top: 0.75rem; display: none; }
-  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.4rem; margin-top: 0.5rem; font-size: 11px; text-align: center; }
-  .ts { border: 1px solid var(--rule); padding: 0.4rem; }
-  .ts-val { color: var(--fg); font-weight: 500; font-variant-numeric: tabular-nums; }
-  .ts-label { color: var(--dim); font-size: 10px; margin-top: 0.1rem; }
+  #test-chart { width: 100%; height: 100px; display: none; border: 1px solid var(--dim); margin-bottom: 0.5rem; }
+  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.4rem; margin-bottom: 0.6rem; font-size: 10px; text-align: center; }
+  .ts { border: 1px solid var(--dim); padding: 0.4rem; background: var(--panel); }
+  .ts-val { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
+  .ts-label { color: var(--muted); font-size: 9px; margin-top: 0.1rem; text-transform: uppercase; letter-spacing: 0.05em; }
 
+  /* ── function-key footer ── */
   .foot {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding-top: 0.85rem;
-    margin-top: 1.5rem;
-    border-top: 1px solid var(--rule);
-    font-size: 11px;
-    color: var(--dim);
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 700;
+    flex-wrap: wrap; gap: 0.3rem 1rem;
   }
-  .foot a { color: var(--muted); text-decoration: none; }
-  .foot a:hover { color: var(--fg); }
+  .foot .keys { display: flex; gap: 1rem; flex-wrap: wrap; }
+  .foot .key {
+    color: var(--bg); text-decoration: none;
+    cursor: pointer;
+  }
+  .foot .key sup {
+    color: rgba(5,11,20,0.55);
+    margin-right: 0.2rem;
+    font-size: 0.8em;
+  }
+  .foot a.key:hover, .foot .key:hover { text-decoration: underline; }
 
-  @media (max-width: 380px) {
-    body { padding: 2rem 1rem; }
+  @media (max-width: 360px) {
+    .splash .stats { gap: 0.9rem; }
     #test-stats { grid-template-columns: 1fr 1fr; }
   }
 </style>
@@ -704,44 +745,52 @@ function statusPage(origins: Map<string, OriginStats>, peers: PeerView[], ipFami
 </head>
 <body>
 <main>
-  <div class="head">
-    <h1>party-sockets <span class="sep">·</span> <span class="live-tag">online</span></h1>
-    <span class="ver">v${VERSION}</span>
+  <section class="splash" data-refresh="splash">
+    <div class="row1">
+      <h1>party-sockets</h1>
+      <span class="ver">v${VERSION}</span>
+    </div>
+    <div class="row2">
+      <span><span class="ok">● online</span>${selfMetaSplash ? ' · ' + selfMetaSplash : ''}<span class="paused-tag"> · paused</span></span>
+      <span class="self">${selfId}</span>
+    </div>
+    <div class="stats">
+      <span class="stat"><span class="k">clients</span><span class="num sn" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span></span>
+      <span class="stat"><span class="k">rooms</span><span class="num sn" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span></span>
+      <span class="stat"><span class="k">machines</span><span class="num">${machineCount}</span></span>
+    </div>
+  </section>
+
+  <div class="panes">
+    <section class="panel" data-refresh="machines">
+      <div class="titlebar"><span>≡  machines</span><span class="meta">${machineCount}</span></div>
+      <div class="panel-c">
+        ${selfRow}${peerRows}
+      </div>
+    </section>
+    <section class="panel" data-refresh="origins">
+      <div class="titlebar">
+        <span>≡  origins</span>
+        ${hasLocal
+          ? '<label class="lt"><input type="checkbox" id="show-local"><span class="lt-box"></span><span>local</span></label>'
+          : `<span class="meta">${cluster.size}</span>`}
+      </div>
+      <div class="panel-c">
+        ${cluster.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
+      </div>
+    </section>
   </div>
 
-  <section data-refresh="live">
-    <div class="section-h"><span class="lbl">live</span></div>
-    <div class="kv">
-      <span class="k">clients</span>
-      <span class="num sn" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span>
-      <span class="k">rooms</span>
-      <span class="num sn" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span>
-      <span class="k">machines</span>
-      <span class="num">${machineCount}</span>
-    </div>
-  </section>
-
-  <section data-refresh="machines">
-    <div class="section-h"><span class="lbl">machines</span></div>
-    ${selfRow}${peerRows}
-  </section>
-
-  <section data-refresh="origins">
-    <div class="section-h">
-      <span class="lbl">origins</span>
-      ${hasLocal ? '<label class="lt"><input type="checkbox" id="show-local"><span class="lt-box"></span><span>show local</span></label>' : ''}
-    </div>
-    ${cluster.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
-  </section>
-
-  <section>
-    <button class="test" id="test-btn">test latency</button>
-    <canvas id="test-chart"></canvas>
-    <div id="test-stats"></div>
-  </section>
+  <button class="test" id="test-btn">test latency</button>
+  <canvas id="test-chart"></canvas>
+  <div id="test-stats"></div>
 
   <div class="foot">
-    <a href="https://github.com/tim4724/Party-Sockets">github</a>
+    <div class="keys">
+      <a class="key" href="https://github.com/tim4724/Party-Sockets"><sup>F1</sup>github</a>
+      <span class="key" data-key="refresh"><sup>F2</sup>refresh</span>
+      <span class="key" data-key="test"><sup>F3</sup>test</span>
+    </div>
     <span>v${VERSION}</span>
   </div>
 </main>
@@ -902,6 +951,24 @@ function runTest() {
 var testActive = false;
 document.getElementById('test-btn').addEventListener('click', function() { testActive = true; runTest(); });
 
+// Function-key shortcuts. Click handlers for the foot bar items, plus actual
+// F1/F2/F3 keypress bindings (we preventDefault to override browser defaults
+// like Help / Find).
+function runKey(k) {
+  if (k === 'github') window.open('https://github.com/tim4724/Party-Sockets', '_blank');
+  else if (k === 'refresh') { refresh(); startPolling(); }
+  else if (k === 'test') document.getElementById('test-btn').click();
+}
+document.addEventListener('click', function(e) {
+  var el = e.target.closest('[data-key]');
+  if (el) runKey(el.dataset.key);
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'F1') { e.preventDefault(); runKey('github'); }
+  else if (e.key === 'F2') { e.preventDefault(); runKey('refresh'); }
+  else if (e.key === 'F3') { e.preventDefault(); runKey('test'); }
+});
+
 var root = document.documentElement;
 function showLocalChecked() { return localStorage.getItem('show-local') === '1'; }
 function updateCounts() {
@@ -940,7 +1007,29 @@ async function refresh() {
     updateCounts();
   } catch (e) {}
 }
-setInterval(refresh, 30000);
+// Auto-refresh every 30s while the tab is visible, capped at 2 minutes from
+// the last activation — idle tabs shouldn't fan out peer /stats forever.
+// Tab focus and F2/the refresh key both reset the 2-minute window.
+var refreshTimer = null;
+var refreshStop = null;
+function stopPolling() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  if (refreshStop) clearTimeout(refreshStop);
+  refreshTimer = null; refreshStop = null;
+  root.classList.add('paused');
+}
+function startPolling() {
+  if (refreshTimer) clearInterval(refreshTimer);
+  if (refreshStop) clearTimeout(refreshStop);
+  refreshTimer = setInterval(refresh, 30000);
+  refreshStop = setTimeout(stopPolling, 120000);
+  root.classList.remove('paused');
+}
+document.addEventListener('visibilitychange', function() {
+  if (document.hidden) stopPolling();
+  else { refresh(); startPolling(); }
+});
+if (!document.hidden) startPolling();
 </script>
 </body>
 </html>`;
