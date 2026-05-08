@@ -42,3 +42,8 @@ kill_timeout = 300
 
 [deploy]
   strategy = "rolling"
+
+# Fly auto-scrapes /metrics every 15s and pushes to fly-metrics.net.
+[[metrics]]
+  port = 3000
+  path = "/metrics"
