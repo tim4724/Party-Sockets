@@ -673,8 +673,10 @@ describe("peer probe", () => {
 
   test("skips probe and redirects when local room exists", async () => {
     rooms.set("A3KX", { maxClients: 4, origin: "test", clients: new Map() });
-    // No peerStatus entries — local hit short-circuits the probe; non-WS
-    // GET still falls through to the catch-all redirect.
+    // Make a peer claim to also have the room — if the probe ran, we'd
+    // emit fly-replay to that peer. Local hit must short-circuit before
+    // we ever ask the network.
+    peerStatus.set("def456", 200);
     const res = await origFetch(`http://localhost:${server.port}/A3KX`, { redirect: "manual" });
     expect(res.status).toBe(302);
     expect(res.headers.get("fly-replay")).toBeNull();

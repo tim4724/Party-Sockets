@@ -47,6 +47,16 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL
 // slow sibling without giving up.
 const PEER_PROBE_TIMEOUT_MS = 3000;
 
+// Path segments that share the 4–8-char alpha-num shape with room codes but
+// are well-known endpoints. Anything in here skips the candidate-code
+// routing so it can't be peer-probed.
+const RESERVED_PATHS = new Set(["health", "stats", "favicon", "metrics"]);
+// Cap per-origin Prometheus series to avoid blowing up cardinality on a
+// scanner cycling through random Origin headers. The total-origin count
+// is exposed separately as `party_sockets_origins_tracked` so visibility
+// of "are we capping?" stays.
+const MAX_ORIGIN_SERIES = 100;
+
 // --- State ---
 
 const rooms = new Map<string, Room>();
@@ -152,8 +162,7 @@ interface Peer {
 
 async function getPeers(): Promise<Peer[]> {
   // PEERS=http://localhost:3001,http://localhost:3002 enables a non-Fly path
-  // for local multi-instance demos. id is the base URL; the renderer detects
-  // the http:// prefix and routes the click + client-side stats fetch directly.
+  // for local multi-instance demos. id is the base URL when on this path.
   const peersEnv = process.env.PEERS;
   if (peersEnv) {
     return peersEnv.split(",").map(s => s.trim()).filter(Boolean).map((u) => {
@@ -401,23 +410,44 @@ function metricsText(): string {
   lines.push(`# TYPE party_sockets_origins_tracked gauge`);
   lines.push(`party_sockets_origins_tracked{${lbl}} ${originCounters.size}`);
 
+  // Cap per-origin series. Sort by the union of live clients + since-boot
+  // connections so a noisy/abusive origin doesn't crowd out a legitimate
+  // active one. Origins beyond the cap are aggregated into a single bucket.
+  const allOrigins = new Set<string>([...origins.keys(), ...originCounters.keys()]);
+  const ranked = [...allOrigins]
+    .map((n) => {
+      const live = origins.get(n) ?? { rooms: 0, clients: 0 };
+      const tot = originCounters.get(n) ?? { connections: 0, rooms: 0 };
+      return { name: n, live, tot, score: live.clients * 1000 + tot.connections };
+    })
+    .sort((a, b) => b.score - a.score);
+  const visible = ranked.slice(0, MAX_ORIGIN_SERIES);
+  const overflow = ranked.slice(MAX_ORIGIN_SERIES);
+  function emitOriginSamples(metric: string, getValue: (e: typeof ranked[number]) => number) {
+    for (const e of visible) {
+      lines.push(`${metric}{${lbl},origin="${promLabel(e.name)}"} ${getValue(e)}`);
+    }
+    if (overflow.length > 0) {
+      const sum = overflow.reduce((a, e) => a + getValue(e), 0);
+      lines.push(`${metric}{${lbl},origin="__other__"} ${sum}`);
+    }
+  }
+
   lines.push(`# HELP party_sockets_clients_by_origin Live clients labeled by origin`);
   lines.push(`# TYPE party_sockets_clients_by_origin gauge`);
+  emitOriginSamples("party_sockets_clients_by_origin", (e) => e.live.clients);
+
   lines.push(`# HELP party_sockets_rooms_by_origin Live rooms labeled by origin`);
   lines.push(`# TYPE party_sockets_rooms_by_origin gauge`);
-  for (const [name, s] of origins) {
-    lines.push(`party_sockets_clients_by_origin{${lbl},origin="${promLabel(name)}"} ${s.clients}`);
-    lines.push(`party_sockets_rooms_by_origin{${lbl},origin="${promLabel(name)}"} ${s.rooms}`);
-  }
+  emitOriginSamples("party_sockets_rooms_by_origin", (e) => e.live.rooms);
 
   lines.push(`# HELP party_sockets_connections_total WebSocket connections opened since boot`);
   lines.push(`# TYPE party_sockets_connections_total counter`);
+  emitOriginSamples("party_sockets_connections_total", (e) => e.tot.connections);
+
   lines.push(`# HELP party_sockets_rooms_created_total Rooms created since boot`);
   lines.push(`# TYPE party_sockets_rooms_created_total counter`);
-  for (const [name, c] of originCounters) {
-    lines.push(`party_sockets_connections_total{${lbl},origin="${promLabel(name)}"} ${c.connections}`);
-    lines.push(`party_sockets_rooms_created_total{${lbl},origin="${promLabel(name)}"} ${c.rooms}`);
-  }
+  emitOriginSamples("party_sockets_rooms_created_total", (e) => e.tot.rooms);
 
   lines.push(`# HELP process_resident_memory_bytes Resident memory size of the bun process`);
   lines.push(`# TYPE process_resident_memory_bytes gauge`);
@@ -425,8 +455,9 @@ function metricsText(): string {
   lines.push(`# HELP process_heap_used_bytes Used JS heap size`);
   lines.push(`# TYPE process_heap_used_bytes gauge`);
   lines.push(`process_heap_used_bytes{${lbl}} ${mem.heapUsed}`);
+  // Monotonic — counter, not gauge. Resets on process restart.
   lines.push(`# HELP process_uptime_seconds Process uptime`);
-  lines.push(`# TYPE process_uptime_seconds gauge`);
+  lines.push(`# TYPE process_uptime_seconds counter`);
   lines.push(`process_uptime_seconds{${lbl}} ${uptimeS.toFixed(2)}`);
 
   return lines.join("\n") + "\n";
@@ -469,9 +500,9 @@ const server = Bun.serve({
     // Pull a candidate room code out of either /<code> (WS upgrade) or
     // /room/<code> (HTTP existence check). Either path participates in
     // routing. Well-known endpoint names that happen to fit the 4-8 char
-    // alpha-num shape (/health, /stats, etc.) must be excluded — otherwise
-    // they trigger a cross-region peer probe before reaching their handler.
-    const RESERVED_PATHS = new Set(["health", "stats", "favicon"]);
+    // alpha-num shape must be excluded — otherwise they trigger a
+    // cross-region peer probe before reaching their handler. (See the
+    // /health-as-room-code prod incident.)
     let candidateCode: string | null = null;
     const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{4,8})$/);
     if (pathRoomMatch && !RESERVED_PATHS.has(pathRoomMatch[1])) {
