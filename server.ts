@@ -184,13 +184,6 @@ export async function findRoomOnPeers(code: string, region: string): Promise<str
   return (await Promise.all(probes)).find((x) => x) ?? null;
 }
 
-async function isKnownInstance(id: string): Promise<boolean> {
-  // Outside Fly we can't validate — trust the input so local/test envs work.
-  if (!process.env.FLY_APP_NAME) return true;
-  const peers = await getPeers();
-  return peers.some((p) => p.id === id);
-}
-
 interface OriginAgg {
   live: { rooms: number; clients: number };
   totals: { connections: number; rooms: number };
@@ -280,11 +273,11 @@ function buildOriginAggForSelf(origins: Map<string, OriginStats>): Record<string
 }
 
 function flyReplayToInstance(id: string): Response {
-  // instance= forces cross-region routing; prefer_instance silently falls back
-  // to the local edge's machine. timeout=5s lets a scaled-to-zero target wake
-  // up; force_self handles the case where it's known but unreachable. Unknown
-  // IDs are filtered upstream via isKnownInstance to avoid the 502 those
-  // produce here.
+  // instance= forces cross-region routing; timeout=5s lets a scaled-to-zero
+  // or suspended target wake up; fallback=force_self handles unreachable or
+  // unknown IDs by serving locally. We don't pre-validate the ID because
+  // Fly's 6PN DNS only lists running machines — pre-filtering would block
+  // wake-ups for stopped/suspended targets.
   return new Response(null, {
     status: 409,
     headers: { "fly-replay": `instance=${id};timeout=5s;fallback=force_self` },
@@ -961,14 +954,18 @@ const server = Bun.serve({
     const url = new URL(req.url);
     // Platform-specific (Fly.io). URL/QR clients pin via ?instance=<id>; manual
     // entry uses /<code> in the path and we discover the holding machine via
-    // peer probe. We validate the pinned ID against Fly's internal DNS — an
-    // unknown ID would otherwise emit a fly-replay that 502s at the edge.
+    // peer probe. We don't pre-validate the ID — fly-replay's
+    // fallback=force_self handles stale/unknown IDs by serving locally, and
+    // pre-validation against DNS would block wakes for stopped/suspended
+    // machines (DNS only lists running ones).
+    //
+    // Loop prevention: when force_self fires, Fly delivers the request back
+    // here with a fly-replay-src header indicating the prior replay. If we
+    // see it, we're the fallback target — don't re-emit a replay.
     const requestedInstance = url.searchParams.get("instance");
-    if (requestedInstance && requestedInstance !== INSTANCE_ID) {
-      if (await isKnownInstance(requestedInstance)) {
-        return flyReplayToInstance(requestedInstance);
-      }
-      // Unknown ID — stale URL. Fall through to local handling.
+    const isReplayFallback = req.headers.has("fly-replay-src");
+    if (requestedInstance && requestedInstance !== INSTANCE_ID && !isReplayFallback) {
+      return flyReplayToInstance(requestedInstance);
     }
     // Pull a candidate room code out of either /<code> (WS upgrade) or
     // /room/<code> (HTTP existence check). Either path participates in

@@ -1,0 +1,895 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Status Page · Design Exploration</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600;700&family=Fraunces:opsz,wght@9..144,400;9..144,500&family=IBM+Plex+Mono:wght@400;500&family=Geist:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* ───── meta page chrome ───── */
+  * { margin: 0; box-sizing: border-box; }
+  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+  body {
+    font-family: 'Geist', ui-sans-serif, system-ui, sans-serif;
+    background: #f4f3ef; color: #1a1a1a; line-height: 1.5;
+  }
+  .meta-h { padding: 4rem 2rem 3rem; max-width: 880px; margin: 0 auto; }
+  .meta-h .crumb {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; text-transform: uppercase; letter-spacing: 0.12em;
+    color: #888; margin-bottom: 1rem;
+  }
+  .meta-h h1 {
+    font-family: 'Fraunces', serif; font-weight: 400; font-size: 2.6rem;
+    line-height: 1.05; letter-spacing: -0.02em; max-width: 620px;
+  }
+  .meta-h h1 em { font-style: italic; color: #888; }
+  .meta-h p { font-size: 14px; color: #555; margin-top: 1rem; max-width: 560px; }
+  .toc {
+    margin-top: 2rem; display: grid; grid-template-columns: repeat(2, 1fr); gap: 1.5rem 3rem;
+  }
+  .toc-group .toc-h {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.18em;
+    color: #888; margin-bottom: 0.5rem;
+  }
+  .toc-group .toc-list { display: flex; flex-direction: column; gap: 0.3rem; }
+  .toc a {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; color: #1a1a1a; text-decoration: none;
+    border: 1px solid #d9d6cf; padding: 0.45rem 0.7rem; background: #fff;
+    transition: background 0.15s, border-color 0.15s;
+    display: flex; justify-content: space-between;
+  }
+  .toc a:hover { background: #1a1a1a; color: #fff; border-color: #1a1a1a; }
+  .toc a span { color: #888; }
+  .toc a:hover span { color: #aaa; }
+
+  .direction-h { border-top: 1px solid #d9d6cf; background: #ebe9e2; padding: 1.25rem 2rem; }
+  .direction-h-inner { max-width: 880px; margin: 0 auto; display: flex; align-items: baseline; gap: 1rem; }
+  .direction-h .index {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.2em; color: #888;
+  }
+  .direction-h h2 { font-family: 'Fraunces', serif; font-weight: 400; font-size: 1.4rem; letter-spacing: -0.01em; }
+  .direction-h .summary {
+    margin-left: auto; font-size: 12px; color: #555;
+    font-family: 'IBM Plex Mono', monospace;
+  }
+
+  .exhibit { padding: 3rem 2rem; border-top: 1px solid #d9d6cf; }
+  .direction-h + .exhibit { border-top: none; }
+  .exhibit-inner { max-width: 880px; margin: 0 auto; display: grid; grid-template-columns: 1fr; gap: 2.5rem; }
+  @media (min-width: 880px) {
+    .exhibit-inner { grid-template-columns: 200px 1fr; gap: 3rem; align-items: start; }
+  }
+  .exhibit-h .index {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; color: #888; letter-spacing: 0.1em;
+  }
+  .exhibit-h h3 {
+    font-family: 'Fraunces', serif; font-weight: 400; font-size: 1.3rem;
+    line-height: 1.2; margin: 0.4rem 0 0.5rem; letter-spacing: -0.01em;
+  }
+  .exhibit-h .blurb { font-size: 13px; color: #666; line-height: 1.55; }
+  .exhibit-h .keys { margin-top: 0.85rem; display: flex; flex-wrap: wrap; gap: 0.3rem; }
+  .exhibit-h .key {
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 10px; text-transform: lowercase; color: #888;
+    border: 1px solid #d9d6cf; padding: 0.15rem 0.5rem; border-radius: 99px;
+  }
+  .demo { display: flex; justify-content: center; }
+  .demo-frame { width: 100%; max-width: 620px; }
+
+  .meta-foot {
+    padding: 3rem 2rem 5rem; max-width: 880px; margin: 0 auto;
+    border-top: 1px solid #d9d6cf;
+    font-family: 'IBM Plex Mono', monospace;
+    font-size: 11px; color: #888;
+    display: flex; justify-content: space-between;
+  }
+
+  /* ─────────────────────────────────────────── */
+  /* ═══ DOS FAMILY ═══ */
+  /* ─────────────────────────────────────────── */
+
+  /* ─── 01 · DOS · Cyan ─── */
+  .d1 {
+    --bg: #050b14; --panel: #0c1622; --cyan: #7dd3fc;
+    --green: #4ade80; --fg: #e2e8f0; --muted: #64748b; --dim: #334155;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; line-height: 1.5; padding: 1.5rem;
+  }
+  .d1 .splash {
+    background: var(--panel); padding: 0.7rem 0.85rem;
+    border: 1px solid var(--cyan); margin-bottom: 0.6rem;
+  }
+  .d1 .splash .row1 {
+    display: flex; justify-content: space-between; align-items: baseline;
+    color: var(--cyan); font-weight: 600;
+  }
+  .d1 .splash h1 { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .d1 .splash .row2 {
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 11px; margin-top: 0.2rem;
+  }
+  .d1 .splash .ok { color: var(--green); }
+  .d1 .panel { border: 1px solid var(--cyan); background: var(--panel); margin-bottom: 0.6rem; }
+  .d1 .titlebar {
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .d1 .titlebar .meta { font-weight: 400; opacity: 0.8; }
+  .d1 .panel-c { padding: 0.7rem 0.85rem; }
+  .d1 .row { display: grid; align-items: baseline; padding: 0.25rem 0; column-gap: 0.6rem; color: var(--fg); }
+  .d1 .kv-row { grid-template-columns: 8rem auto; }
+  .d1 .kv-row .k { color: var(--muted); }
+  .d1 .kv-row .v { color: var(--green); font-weight: 600; }
+  .d1 .machine { grid-template-columns: 1ch auto 1fr auto; }
+  .d1 .machine .mark { color: var(--green); }
+  .d1 .machine.peer .mark { color: var(--dim); }
+  .d1 .m-id { color: var(--fg); font-weight: 600; }
+  .d1 .m-meta { color: var(--muted); font-size: 11px; }
+  .d1 .m-counts { color: var(--green); white-space: nowrap; }
+  .d1 .machine.peer .m-counts { color: var(--cyan); }
+  .d1 .origin { grid-template-columns: 1ch 1fr auto; row-gap: 0; }
+  .d1 .origin .mark { color: var(--green); }
+  .d1 .o-name { color: var(--fg); font-weight: 600; }
+  .d1 .o-live { color: var(--green); }
+  .d1 .o-tot { grid-column: 2 / span 2; color: var(--muted); font-size: 10px; }
+  .d1 .foot {
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between;
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 600;
+    margin-top: 0.4rem;
+  }
+  .d1 .foot a { color: var(--bg); text-decoration: none; }
+  .d1 .foot a:hover { text-decoration: underline; }
+  .d1 .foot .keys { display: flex; gap: 1rem; }
+  .d1 .foot .key { font-weight: 700; }
+  .d1 .foot .key sup { color: rgba(5,11,20,0.6); }
+
+  /* ─── 02 · DOS · Phosphor (green) ─── */
+  .d2 {
+    --bg: #030903; --panel: #071407; --phos: #6dec85;
+    --phos-d: #2a8240; --fg: #d6f0d6; --muted: #5e7a5e; --dim: #1e3320;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; line-height: 1.5; padding: 1.5rem;
+  }
+  .d2 .splash {
+    background: var(--panel); padding: 0.7rem 0.85rem;
+    border: 1px solid var(--phos); margin-bottom: 0.6rem;
+  }
+  .d2 .splash .row1 {
+    display: flex; justify-content: space-between; align-items: baseline;
+    color: var(--phos); font-weight: 600;
+  }
+  .d2 .splash h1 { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .d2 .splash .row2 {
+    display: flex; justify-content: space-between;
+    color: var(--phos-d); font-size: 11px; margin-top: 0.2rem;
+  }
+  .d2 .splash .ok { color: var(--phos); font-weight: 600; }
+  .d2 .panel { border: 1px solid var(--phos); background: var(--panel); margin-bottom: 0.6rem; }
+  .d2 .titlebar {
+    background: var(--phos); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase;
+  }
+  .d2 .titlebar .meta { font-weight: 400; opacity: 0.75; }
+  .d2 .panel-c { padding: 0.7rem 0.85rem; }
+  .d2 .row { display: grid; align-items: baseline; padding: 0.25rem 0; column-gap: 0.6rem; color: var(--fg); }
+  .d2 .kv-row { grid-template-columns: 8rem auto; }
+  .d2 .kv-row .k { color: var(--muted); }
+  .d2 .kv-row .v { color: var(--phos); font-weight: 600; }
+  .d2 .machine { grid-template-columns: 1ch auto 1fr auto; }
+  .d2 .machine .mark { color: var(--phos); }
+  .d2 .machine.peer .mark { color: var(--dim); }
+  .d2 .m-id { color: var(--fg); font-weight: 600; }
+  .d2 .m-meta { color: var(--muted); font-size: 11px; }
+  .d2 .m-counts { color: var(--phos); white-space: nowrap; }
+  .d2 .machine.peer .m-counts { color: var(--phos-d); }
+  .d2 .origin { grid-template-columns: 1ch 1fr auto; row-gap: 0; }
+  .d2 .origin .mark { color: var(--phos); }
+  .d2 .o-name { color: var(--fg); font-weight: 600; }
+  .d2 .o-live { color: var(--phos); }
+  .d2 .o-tot { grid-column: 2 / span 2; color: var(--muted); font-size: 10px; }
+  .d2 .foot {
+    background: var(--phos); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between;
+    font-size: 11px; text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 600;
+    margin-top: 0.4rem;
+  }
+  .d2 .foot a { color: var(--bg); text-decoration: none; }
+  .d2 .foot .keys { display: flex; gap: 1rem; }
+  .d2 .foot .key { font-weight: 700; }
+  .d2 .foot .key sup { color: rgba(3,9,3,0.6); }
+
+  /* ─── 03 · DOS · Norton Split ─── */
+  .d3 {
+    --bg: #050b14; --panel: #0c1622; --cyan: #7dd3fc;
+    --green: #4ade80; --magenta: #f0abfc;
+    --fg: #e2e8f0; --muted: #64748b; --dim: #334155;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; line-height: 1.5; padding: 1.5rem;
+  }
+  .d3 .splash {
+    background: var(--panel); padding: 0.7rem 0.85rem;
+    border: 1px solid var(--cyan); margin-bottom: 0.6rem;
+  }
+  .d3 .splash .row1 {
+    display: flex; justify-content: space-between; align-items: baseline;
+    color: var(--cyan); font-weight: 600;
+  }
+  .d3 .splash h1 { font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase; }
+  .d3 .splash .row2 {
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 11px; margin-top: 0.2rem;
+  }
+  .d3 .splash .ok { color: var(--green); }
+  .d3 .splash .stats {
+    display: flex; gap: 1.4rem; margin-top: 0.5rem;
+    padding-top: 0.5rem; border-top: 1px dashed var(--dim);
+    font-size: 11px;
+  }
+  .d3 .splash .stat { display: flex; gap: 0.4rem; }
+  .d3 .splash .stat .k { color: var(--muted); }
+  .d3 .splash .stat .v { color: var(--green); font-weight: 600; }
+  .d3 .panes {
+    display: grid; grid-template-columns: 1fr 1fr;
+    gap: 0.5rem;
+  }
+  .d3 .panel {
+    border: 1px solid var(--cyan); background: var(--panel);
+    display: flex; flex-direction: column;
+  }
+  .d3 .panel.active { border-color: var(--magenta); }
+  .d3 .titlebar {
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.6rem;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+    text-transform: uppercase;
+    display: flex; justify-content: space-between;
+  }
+  .d3 .panel.active .titlebar { background: var(--magenta); }
+  .d3 .panel-c { padding: 0.5rem 0.6rem; flex: 1; }
+  .d3 .row { display: grid; column-gap: 0.5rem; padding: 0.3rem 0; align-items: baseline; }
+  .d3 .row + .row { border-top: 1px dotted var(--dim); }
+  .d3 .machine { grid-template-columns: 1ch 1fr auto; row-gap: 0.05rem; }
+  .d3 .machine .mark { color: var(--green); }
+  .d3 .machine.peer .mark { color: var(--dim); }
+  .d3 .m-id { color: var(--fg); font-weight: 600; }
+  .d3 .m-meta { color: var(--muted); font-size: 10px; grid-column: 2 / span 2; }
+  .d3 .m-counts { color: var(--green); white-space: nowrap; }
+  .d3 .machine.peer .m-counts { color: var(--cyan); }
+  .d3 .origin { grid-template-columns: 1ch 1fr auto; row-gap: 0.05rem; }
+  .d3 .origin .mark { color: var(--green); }
+  .d3 .o-name { color: var(--fg); font-weight: 600; }
+  .d3 .o-live { color: var(--green); }
+  .d3 .o-tot { grid-column: 2 / span 2; color: var(--muted); font-size: 10px; }
+  .d3 .foot {
+    background: var(--cyan); color: var(--bg);
+    padding: 0.3rem 0.7rem;
+    display: flex; justify-content: space-between;
+    font-size: 10px; text-transform: uppercase;
+    letter-spacing: 0.05em; font-weight: 600;
+    margin-top: 0.5rem;
+  }
+  .d3 .foot a { color: var(--bg); text-decoration: none; }
+  .d3 .foot .keys { display: flex; gap: 0.85rem; }
+  .d3 .foot .key { font-weight: 700; }
+  .d3 .foot .key sup { color: rgba(5,11,20,0.6); }
+
+  /* ─────────────────────────────────────────── */
+  /* ═══ HTOP FAMILY ═══ */
+  /* ─────────────────────────────────────────── */
+
+  /* ─── 04 · Htop · Standard ─── */
+  .d4 {
+    --bg: #0a0c0a; --fg: #e0e3df; --muted: #6e766e; --dim: #383b38;
+    --green: #4ade80; --cyan: #67e8f9; --header-bg: #1a1d1a;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; line-height: 1.45;
+  }
+  .d4 .top {
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--dim);
+    display: flex; justify-content: space-between; align-items: center;
+    font-size: 11px; color: var(--muted);
+  }
+  .d4 .top .b { color: var(--fg); font-weight: 600; }
+  .d4 .top .ok { color: var(--green); }
+  .d4 .summary {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--dim);
+    color: var(--muted); font-size: 11px;
+    display: flex; gap: 1.5rem;
+  }
+  .d4 .summary .v { color: var(--fg); font-weight: 600; }
+  .d4 .col-h {
+    background: var(--header-bg); color: var(--cyan);
+    text-transform: uppercase; letter-spacing: 0.08em;
+    font-size: 10px; padding: 0.3rem 1rem;
+    display: grid; column-gap: 0.6rem;
+    border-bottom: 1px solid var(--dim);
+    font-weight: 600;
+  }
+  .d4 .col-h.machines { grid-template-columns: 2ch 14ch 6ch 6ch 6ch 1fr; }
+  .d4 .col-h.origins { grid-template-columns: 2ch 1fr 9ch 1fr; }
+  .d4 .row {
+    display: grid; column-gap: 0.6rem;
+    padding: 0.3rem 1rem; align-items: baseline;
+    color: var(--fg); text-decoration: none;
+  }
+  .d4 .row:nth-child(odd) { background: rgba(255,255,255,0.015); }
+  .d4 .machine { grid-template-columns: 2ch 14ch 6ch 6ch 6ch 1fr; }
+  .d4 .machine .mark { color: var(--green); font-weight: 600; }
+  .d4 .machine.peer .mark { color: var(--dim); }
+  .d4 .machine .id { color: var(--fg); font-weight: 600; }
+  .d4 .machine .reg, .d4 .machine .up, .d4 .machine .ipf { color: var(--muted); }
+  .d4 .machine .active { color: var(--green); white-space: nowrap; text-align: right; }
+  .d4 .machine.peer .active { color: var(--cyan); }
+  .d4 .origin { grid-template-columns: 2ch 1fr 9ch 1fr; }
+  .d4 .origin .mark { color: var(--green); }
+  .d4 .origin .name { color: var(--fg); font-weight: 600; }
+  .d4 .origin .live { color: var(--green); white-space: nowrap; text-align: right; }
+  .d4 .origin .tot { color: var(--muted); }
+  .d4 .sep { padding: 0.4rem 0; }
+  .d4 .fbar {
+    background: var(--header-bg); color: var(--muted);
+    padding: 0.3rem 1rem;
+    display: flex; justify-content: space-between;
+    font-size: 10px; border-top: 1px solid var(--dim);
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .d4 .fbar .keys { display: flex; gap: 1rem; }
+  .d4 .fbar .key { color: var(--fg); }
+  .d4 .fbar .key b {
+    background: var(--cyan); color: var(--bg);
+    padding: 0 0.35rem; font-weight: 700; margin-right: 0.25rem;
+  }
+
+  /* ─── 05 · Htop · Two Pane ─── */
+  .d5 {
+    --bg: #0a0c0a; --fg: #e0e3df; --muted: #6e766e; --dim: #383b38;
+    --green: #4ade80; --cyan: #67e8f9; --magenta: #f0abfc;
+    --header-bg: #1a1d1a;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; line-height: 1.45;
+  }
+  .d5 .top {
+    padding: 0.65rem 1rem;
+    border-bottom: 1px solid var(--dim);
+    display: flex; justify-content: space-between;
+    font-size: 11px; color: var(--muted);
+  }
+  .d5 .top .b { color: var(--fg); font-weight: 600; }
+  .d5 .top .ok { color: var(--green); }
+  .d5 .summary {
+    padding: 0.5rem 1rem;
+    border-bottom: 1px solid var(--dim);
+    color: var(--muted); font-size: 11px;
+    display: flex; gap: 1.5rem;
+  }
+  .d5 .summary .v { color: var(--fg); font-weight: 600; }
+  .d5 .panes {
+    display: grid; grid-template-columns: 1fr 1px 1fr;
+    background: var(--bg);
+    border-bottom: 1px solid var(--dim);
+  }
+  .d5 .pane-divider { background: var(--dim); }
+  .d5 .pane-h {
+    background: var(--header-bg); color: var(--cyan);
+    text-transform: uppercase; letter-spacing: 0.1em;
+    font-size: 10px; padding: 0.4rem 0.8rem;
+    border-bottom: 1px solid var(--dim);
+    font-weight: 700;
+    display: flex; justify-content: space-between;
+  }
+  .d5 .pane-h .meta { color: var(--muted); font-weight: 400; letter-spacing: 0.02em; }
+  .d5 .col-h {
+    color: var(--magenta); font-size: 9px; padding: 0.25rem 0.8rem;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    display: grid; column-gap: 0.5rem;
+    border-bottom: 1px dotted var(--dim);
+    font-weight: 600;
+  }
+  .d5 .col-h.machines { grid-template-columns: 1ch 1fr 4ch 1fr; }
+  .d5 .col-h.origins { grid-template-columns: 1ch 1fr 1fr; }
+  .d5 .row {
+    display: grid; column-gap: 0.5rem;
+    padding: 0.3rem 0.8rem; align-items: baseline;
+    color: var(--fg); text-decoration: none;
+  }
+  .d5 .row:nth-child(odd) { background: rgba(255,255,255,0.015); }
+  .d5 .machine { grid-template-columns: 1ch 1fr 4ch 1fr; row-gap: 0.05rem; }
+  .d5 .machine .mark { color: var(--green); }
+  .d5 .machine.peer .mark { color: var(--dim); }
+  .d5 .machine .id { color: var(--fg); font-weight: 600; }
+  .d5 .machine .reg { color: var(--muted); font-size: 10px; }
+  .d5 .machine .meta { color: var(--muted); font-size: 10px; grid-column: 2 / span 3; }
+  .d5 .machine .active { color: var(--green); white-space: nowrap; text-align: right; }
+  .d5 .machine.peer .active { color: var(--cyan); }
+  .d5 .origin { grid-template-columns: 1ch 1fr 1fr; row-gap: 0.05rem; }
+  .d5 .origin .mark { color: var(--green); }
+  .d5 .origin .name { color: var(--fg); font-weight: 600; }
+  .d5 .origin .live { color: var(--green); text-align: right; white-space: nowrap; }
+  .d5 .origin .tot { color: var(--muted); font-size: 10px; grid-column: 2 / span 2; }
+  .d5 .pane-c { padding-bottom: 0.4rem; }
+  .d5 .fbar {
+    background: var(--header-bg); color: var(--muted);
+    padding: 0.3rem 1rem;
+    display: flex; justify-content: space-between;
+    font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .d5 .fbar .keys { display: flex; gap: 1rem; }
+  .d5 .fbar .key { color: var(--fg); }
+  .d5 .fbar .key b {
+    background: var(--cyan); color: var(--bg);
+    padding: 0 0.35rem; font-weight: 700; margin-right: 0.25rem;
+  }
+
+  /* ─── 06 · Htop · Compact (top-style) ─── */
+  .d6 {
+    --bg: #0a0a0a; --fg: #e0e3df; --muted: #6e766e; --dim: #2a2a2a;
+    --green: #4ade80; --cyan: #67e8f9;
+    background: var(--bg); color: var(--fg);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: 11.5px; line-height: 1.5;
+    padding: 1rem 1.25rem;
+  }
+  .d6 .head {
+    display: flex; justify-content: space-between;
+    color: var(--muted); margin-bottom: 0.2rem;
+  }
+  .d6 .head .b { color: var(--fg); font-weight: 600; }
+  .d6 .head .ok { color: var(--green); font-weight: 600; }
+  .d6 .summary {
+    display: flex; gap: 1.5rem; padding-bottom: 0.5rem;
+    border-bottom: 1px solid var(--dim); margin-bottom: 0.65rem;
+    color: var(--muted); font-size: 11px;
+  }
+  .d6 .summary .v { color: var(--fg); font-weight: 600; }
+  .d6 .sec-h {
+    color: var(--cyan); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.12em;
+    font-weight: 700;
+    margin-top: 0.6rem; margin-bottom: 0.15rem;
+  }
+  .d6 .col-h {
+    color: var(--muted); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.08em;
+    display: grid; column-gap: 0.6rem;
+    padding: 0.1rem 0;
+  }
+  .d6 .col-h.machines { grid-template-columns: 2ch 14ch 6ch 6ch 6ch 1fr; }
+  .d6 .col-h.origins { grid-template-columns: 2ch 1fr 8ch 8ch; }
+  .d6 .row {
+    display: grid; column-gap: 0.6rem;
+    align-items: baseline;
+    color: var(--fg); padding: 0.05rem 0;
+    text-decoration: none;
+  }
+  .d6 .machine { grid-template-columns: 2ch 14ch 6ch 6ch 6ch 1fr; }
+  .d6 .machine .mark { color: var(--green); }
+  .d6 .machine.peer .mark { color: var(--dim); }
+  .d6 .machine .id { color: var(--fg); font-weight: 600; }
+  .d6 .machine .reg, .d6 .machine .up, .d6 .machine .ipf { color: var(--muted); }
+  .d6 .machine .active { color: var(--green); white-space: nowrap; text-align: right; }
+  .d6 .machine.peer .active { color: var(--cyan); }
+  .d6 .origin { grid-template-columns: 2ch 1fr 8ch 8ch; }
+  .d6 .origin .mark { color: var(--green); }
+  .d6 .origin .name { color: var(--fg); font-weight: 600; }
+  .d6 .origin .live { color: var(--green); text-align: right; white-space: nowrap; }
+  .d6 .origin .tot { color: var(--muted); text-align: right; white-space: nowrap; }
+  .d6 .foot {
+    margin-top: 0.85rem; padding-top: 0.5rem;
+    border-top: 1px solid var(--dim);
+    display: flex; justify-content: space-between;
+    color: var(--muted); font-size: 10px;
+    text-transform: uppercase; letter-spacing: 0.05em;
+  }
+  .d6 .foot a { color: var(--cyan); text-decoration: none; }
+  .d6 .foot a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+
+<header class="meta-h">
+  <div class="crumb">design exploration · ascii · dos & htop</div>
+  <h1>Six variants of the two surviving <em>ASCII</em> shapes.</h1>
+  <p>Three takes on the DOS-windowed approach (palette and pane structure), three takes on the htop columnar density (single-pane, split-pane, compact). No load metric — there isn’t one to honestly back yet.</p>
+  <nav class="toc">
+    <div class="toc-group">
+      <div class="toc-h">DOS</div>
+      <div class="toc-list">
+        <a href="#d1">01 — Cyan <span>panel · titlebar</span></a>
+        <a href="#d2">02 — Phosphor <span>green palette</span></a>
+        <a href="#d3">03 — Norton Split <span>two-pane</span></a>
+      </div>
+    </div>
+    <div class="toc-group">
+      <div class="toc-h">Htop</div>
+      <div class="toc-list">
+        <a href="#d4">04 — Standard <span>columnar · single</span></a>
+        <a href="#d5">05 — Two Pane <span>side by side</span></a>
+        <a href="#d6">06 — Compact <span>top-style · dense</span></a>
+      </div>
+    </div>
+  </nav>
+</header>
+
+<!-- ════════════ DOS ════════════ -->
+<div class="direction-h" id="dos">
+  <div class="direction-h-inner">
+    <span class="index">Family 01</span>
+    <h2>DOS</h2>
+    <span class="summary">windowed · titlebars · function keys</span>
+  </div>
+</div>
+
+<!-- ─── 01 · DOS Cyan ─── -->
+<article class="exhibit" id="d1">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">01 / 06</div>
+      <h3>DOS · Cyan</h3>
+      <p class="blurb">Norton Commander era. Solid cyan title bars across each panel, blue-tinted void background, status bar at the bottom with function keys.</p>
+      <div class="keys"><span class="key">titlebar</span><span class="key">bbs</span><span class="key">cyan</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d1">
+      <div class="splash">
+        <div class="row1"><h1>party-sockets</h1><span>v1.11.3</span></div>
+        <div class="row2"><span><span class="ok">● online</span> · 12m · dev1 · ipv4</span><span>node 1/2</span></div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  live</span><span class="meta">3 metrics</span></div>
+        <div class="panel-c">
+          <div class="row kv-row"><span class="k">clients</span><span class="v">7</span></div>
+          <div class="row kv-row"><span class="k">rooms</span><span class="v">3</span></div>
+          <div class="row kv-row"><span class="k">machines</span><span class="v">2</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  machines</span><span class="meta">02 nodes</span></div>
+        <div class="panel-c">
+          <div class="row machine">
+            <span class="mark">●</span><span class="m-id">local-3001</span>
+            <span class="m-meta">dev1 · 12m · ipv4</span><span class="m-counts">5c · 2r</span>
+          </div>
+          <div class="row machine peer">
+            <span class="mark">○</span><span class="m-id">local-3002</span>
+            <span class="m-meta">dev2 · 12m</span><span class="m-counts">2c · 1r</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  origins</span><span class="meta">02 sources</span></div>
+        <div class="panel-c">
+          <div class="row origin">
+            <span class="mark">●</span><span class="o-name">hexstacker.com</span><span class="o-live">5c · 2r</span>
+            <span class="o-tot">5 conn · 2 rooms since boot</span>
+          </div>
+          <div class="row origin">
+            <span class="mark">●</span><span class="o-name">example.com</span><span class="o-live">2c · 1r</span>
+            <span class="o-tot">2 conn · 1 room since boot</span>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="keys">
+          <span class="key"><sup>F1</sup>github</span>
+          <span class="key"><sup>F2</sup>refresh</span>
+          <span class="key"><sup>F10</sup>quit</span>
+        </div>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<!-- ─── 02 · DOS Phosphor ─── -->
+<article class="exhibit" id="d2">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">02 / 06</div>
+      <h3>DOS · Phosphor</h3>
+      <p class="blurb">Same windowed structure, swapped to a pure DEC-VT phosphor green palette. Reads as a serial terminal session into a remote node rather than a BBS.</p>
+      <div class="keys"><span class="key">phosphor</span><span class="key">vt100</span><span class="key">green</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d2">
+      <div class="splash">
+        <div class="row1"><h1>party-sockets</h1><span>v1.11.3</span></div>
+        <div class="row2"><span><span class="ok">● online</span> · 12m · dev1 · ipv4</span><span>node 1/2</span></div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  live</span><span class="meta">3 metrics</span></div>
+        <div class="panel-c">
+          <div class="row kv-row"><span class="k">clients</span><span class="v">7</span></div>
+          <div class="row kv-row"><span class="k">rooms</span><span class="v">3</span></div>
+          <div class="row kv-row"><span class="k">machines</span><span class="v">2</span></div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  machines</span><span class="meta">02 nodes</span></div>
+        <div class="panel-c">
+          <div class="row machine">
+            <span class="mark">●</span><span class="m-id">local-3001</span>
+            <span class="m-meta">dev1 · 12m · ipv4</span><span class="m-counts">5c · 2r</span>
+          </div>
+          <div class="row machine peer">
+            <span class="mark">○</span><span class="m-id">local-3002</span>
+            <span class="m-meta">dev2 · 12m</span><span class="m-counts">2c · 1r</span>
+          </div>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="titlebar"><span>≡  origins</span><span class="meta">02 sources</span></div>
+        <div class="panel-c">
+          <div class="row origin">
+            <span class="mark">●</span><span class="o-name">hexstacker.com</span><span class="o-live">5c · 2r</span>
+            <span class="o-tot">5 conn · 2 rooms since boot</span>
+          </div>
+          <div class="row origin">
+            <span class="mark">●</span><span class="o-name">example.com</span><span class="o-live">2c · 1r</span>
+            <span class="o-tot">2 conn · 1 room since boot</span>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="keys">
+          <span class="key"><sup>F1</sup>github</span>
+          <span class="key"><sup>F2</sup>refresh</span>
+          <span class="key"><sup>F10</sup>quit</span>
+        </div>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<!-- ─── 03 · DOS Norton Split ─── -->
+<article class="exhibit" id="d3">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">03 / 06</div>
+      <h3>DOS · Norton Split</h3>
+      <p class="blurb">Two panes side by side — Norton Commander layout. Live counts collapse into the splash header. Active pane (machines) gets a magenta titlebar; inactive stays cyan.</p>
+      <div class="keys"><span class="key">split-pane</span><span class="key">norton</span><span class="key">dense</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d3">
+      <div class="splash">
+        <div class="row1"><h1>party-sockets</h1><span>v1.11.3</span></div>
+        <div class="row2"><span><span class="ok">● online</span> · 12m · dev1 · ipv4</span><span>node 1/2</span></div>
+        <div class="stats">
+          <span class="stat"><span class="k">clients</span><span class="v">7</span></span>
+          <span class="stat"><span class="k">rooms</span><span class="v">3</span></span>
+          <span class="stat"><span class="k">machines</span><span class="v">2</span></span>
+        </div>
+      </div>
+      <div class="panes">
+        <div class="panel active">
+          <div class="titlebar"><span>≡  machines</span><span>02</span></div>
+          <div class="panel-c">
+            <div class="row machine">
+              <span class="mark">●</span><span class="m-id">local-3001</span><span class="m-counts">5c · 2r</span>
+              <span class="m-meta">dev1 · 12m · ipv4</span>
+            </div>
+            <div class="row machine peer">
+              <span class="mark">○</span><span class="m-id">local-3002</span><span class="m-counts">2c · 1r</span>
+              <span class="m-meta">dev2 · 12m</span>
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="titlebar"><span>≡  origins</span><span>02</span></div>
+          <div class="panel-c">
+            <div class="row origin">
+              <span class="mark">●</span><span class="o-name">hexstacker.com</span><span class="o-live">5c · 2r</span>
+              <span class="o-tot">5 conn · 2 rooms since boot</span>
+            </div>
+            <div class="row origin">
+              <span class="mark">●</span><span class="o-name">example.com</span><span class="o-live">2c · 1r</span>
+              <span class="o-tot">2 conn · 1 room since boot</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="foot">
+        <div class="keys">
+          <span class="key"><sup>F1</sup>github</span>
+          <span class="key"><sup>F2</sup>refresh</span>
+          <span class="key"><sup>Tab</sup>switch</span>
+          <span class="key"><sup>F10</sup>quit</span>
+        </div>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<!-- ════════════ HTOP ════════════ -->
+<div class="direction-h" id="htop">
+  <div class="direction-h-inner">
+    <span class="index">Family 02</span>
+    <h2>Htop</h2>
+    <span class="summary">columns · alternating rows · function keys</span>
+  </div>
+</div>
+
+<!-- ─── 04 · Htop Standard ─── -->
+<article class="exhibit" id="d4">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">04 / 06</div>
+      <h3>Htop · Standard</h3>
+      <p class="blurb">Classic htop columnar density. Top status, summary line, two stacked tables (machines, origins) with column headers. Function-key footer.</p>
+      <div class="keys"><span class="key">columns</span><span class="key">stacked</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d4">
+      <div class="top">
+        <span><span class="b">party-sockets</span> · <span class="ok">● online</span> · uptime 12m</span>
+        <span>v1.11.3</span>
+      </div>
+      <div class="summary">
+        <span>clients <span class="v">7</span></span>
+        <span>rooms <span class="v">3</span></span>
+        <span>machines <span class="v">2</span></span>
+        <span>this <span class="v">local-3001</span> · dev1 · ipv4</span>
+      </div>
+      <div class="col-h machines"><span></span><span>id</span><span>region</span><span>uptime</span><span>ip</span><span>active</span></div>
+      <div class="row machine">
+        <span class="mark">●</span><span class="id">local-3001</span><span class="reg">dev1</span><span class="up">12m</span><span class="ipf">ipv4</span><span class="active">5c · 2r</span>
+      </div>
+      <a class="row machine peer" href="#">
+        <span class="mark">○</span><span class="id">local-3002</span><span class="reg">dev2</span><span class="up">12m</span><span class="ipf">—</span><span class="active">2c · 1r</span>
+      </a>
+      <div class="sep"></div>
+      <div class="col-h origins"><span></span><span>origin</span><span>live</span><span>since boot</span></div>
+      <div class="row origin">
+        <span class="mark">●</span><span class="name">hexstacker.com</span><span class="live">5c · 2r</span><span class="tot">5 conn · 2 rooms</span>
+      </div>
+      <div class="row origin">
+        <span class="mark">●</span><span class="name">example.com</span><span class="live">2c · 1r</span><span class="tot">2 conn · 1 room</span>
+      </div>
+      <div class="fbar">
+        <div class="keys">
+          <span class="key"><b>F1</b>github</span>
+          <span class="key"><b>F2</b>refresh</span>
+          <span class="key"><b>F10</b>quit</span>
+        </div>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<!-- ─── 05 · Htop Two Pane ─── -->
+<article class="exhibit" id="d5">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">05 / 06</div>
+      <h3>Htop · Two Pane</h3>
+      <p class="blurb">Side-by-side panes — machines on the left, origins on the right, sharing a single summary header and footer. Higher information density per scroll.</p>
+      <div class="keys"><span class="key">two-pane</span><span class="key">side-by-side</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d5">
+      <div class="top">
+        <span><span class="b">party-sockets</span> · <span class="ok">● online</span> · uptime 12m</span>
+        <span>v1.11.3</span>
+      </div>
+      <div class="summary">
+        <span>clients <span class="v">7</span></span>
+        <span>rooms <span class="v">3</span></span>
+        <span>machines <span class="v">2</span></span>
+      </div>
+      <div class="panes">
+        <div>
+          <div class="pane-h"><span>nodes</span><span class="meta">2</span></div>
+          <div class="col-h machines"><span></span><span>id · meta</span><span>rgn</span><span>active</span></div>
+          <div class="pane-c">
+            <div class="row machine">
+              <span class="mark">●</span><span class="id">local-3001</span><span class="reg">dev1</span><span class="active">5c · 2r</span>
+              <span class="meta">12m · ipv4</span>
+            </div>
+            <a class="row machine peer" href="#">
+              <span class="mark">○</span><span class="id">local-3002</span><span class="reg">dev2</span><span class="active">2c · 1r</span>
+              <span class="meta">12m</span>
+            </a>
+          </div>
+        </div>
+        <div class="pane-divider"></div>
+        <div>
+          <div class="pane-h"><span>origins</span><span class="meta">2</span></div>
+          <div class="col-h origins"><span></span><span>name</span><span>live</span></div>
+          <div class="pane-c">
+            <div class="row origin">
+              <span class="mark">●</span><span class="name">hexstacker.com</span><span class="live">5c · 2r</span>
+              <span class="tot">5 conn · 2 rooms since boot</span>
+            </div>
+            <div class="row origin">
+              <span class="mark">●</span><span class="name">example.com</span><span class="live">2c · 1r</span>
+              <span class="tot">2 conn · 1 room since boot</span>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="fbar">
+        <div class="keys">
+          <span class="key"><b>F1</b>github</span>
+          <span class="key"><b>F2</b>refresh</span>
+          <span class="key"><b>Tab</b>switch</span>
+          <span class="key"><b>F10</b>quit</span>
+        </div>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<!-- ─── 06 · Htop Compact ─── -->
+<article class="exhibit" id="d6">
+  <div class="exhibit-inner">
+    <div class="exhibit-h">
+      <div class="index">06 / 06</div>
+      <h3>Htop · Compact</h3>
+      <p class="blurb">top(1)-style. No window chrome, no bordered tables — just a hairline header rule, terse uppercase column labels, and tight rows. Reads as <code>watch -n1</code>.</p>
+      <div class="keys"><span class="key">terse</span><span class="key">no-chrome</span><span class="key">top(1)</span></div>
+    </div>
+    <div class="demo"><div class="demo-frame"><div class="d6">
+      <div class="head">
+        <span><span class="b">party-sockets</span> · <span class="ok">● online</span> · uptime 12m</span>
+        <span>v1.11.3</span>
+      </div>
+      <div class="summary">
+        <span>clients <span class="v">7</span></span>
+        <span>rooms <span class="v">3</span></span>
+        <span>machines <span class="v">2</span></span>
+      </div>
+      <div class="sec-h">nodes</div>
+      <div class="col-h machines"><span></span><span>id</span><span>region</span><span>uptime</span><span>ip</span><span>active</span></div>
+      <div class="row machine">
+        <span class="mark">●</span><span class="id">local-3001</span><span class="reg">dev1</span><span class="up">12m</span><span class="ipf">ipv4</span><span class="active">5c · 2r</span>
+      </div>
+      <a class="row machine peer" href="#">
+        <span class="mark">○</span><span class="id">local-3002</span><span class="reg">dev2</span><span class="up">12m</span><span class="ipf">—</span><span class="active">2c · 1r</span>
+      </a>
+      <div class="sec-h">origins</div>
+      <div class="col-h origins"><span></span><span>name</span><span>live</span><span>since boot</span></div>
+      <div class="row origin">
+        <span class="mark">●</span><span class="name">hexstacker.com</span><span class="live">5c · 2r</span><span class="tot">5 · 2</span>
+      </div>
+      <div class="row origin">
+        <span class="mark">●</span><span class="name">example.com</span><span class="live">2c · 1r</span><span class="tot">2 · 1</span>
+      </div>
+      <div class="foot">
+        <span><a href="#">github</a></span>
+        <span>v1.11.3</span>
+      </div>
+    </div></div></div>
+  </div>
+</article>
+
+<footer class="meta-foot">
+  <span>party-sockets · status page · design exploration</span>
+  <span>2026</span>
+</footer>
+
+</body>
+</html>

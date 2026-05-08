@@ -500,7 +500,7 @@ describe("protocol errors", () => {
 
 describe("instance routing", () => {
   test("returns fly-replay when ?instance= doesn't match local INSTANCE_ID", async () => {
-    // No FLY_APP_NAME — isKnownInstance trusts the input.
+    // No DNS validation — fallback=force_self handles unreachable IDs.
     const res = await fetch(`http://localhost:${server.port}/health?instance=other`, {
       redirect: "manual",
     });
@@ -594,20 +594,25 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBe("instance=def456;timeout=5s;fallback=force_self");
   });
 
-  test("?instance=<unknown> falls through instead of emitting fly-replay", async () => {
-    // FLY_APP_NAME is set in this describe; mocked DNS returns abc123 + def456.
-    // An unknown ID should not trigger a replay (which would 502 at Fly's edge).
-    const res = await origFetch(`http://localhost:${server.port}/health?instance=deadbeef`);
-    expect(res.status).toBe(200);
-    expect(res.headers.get("fly-replay")).toBeNull();
-  });
-
-  test("?instance=<known-peer> emits fly-replay", async () => {
-    const res = await origFetch(`http://localhost:${server.port}/health?instance=abc123`, {
+  test("?instance=<any> emits fly-replay (Fly handles wake / fallback)", async () => {
+    // We no longer pre-validate against DNS — DNS only lists running
+    // machines, so validation would block wakes for stopped targets.
+    // Trust fallback=force_self to handle truly-unknown IDs.
+    const res = await origFetch(`http://localhost:${server.port}/health?instance=deadbeef`, {
       redirect: "manual",
     });
     expect(res.status).toBe(409);
-    expect(res.headers.get("fly-replay")).toBe("instance=abc123;timeout=5s;fallback=force_self");
+    expect(res.headers.get("fly-replay")).toBe("instance=deadbeef;timeout=5s;fallback=force_self");
+  });
+
+  test("?instance= with fly-replay-src skips replay (loop prevention)", async () => {
+    // When force_self fires, Fly sends the request back to us with
+    // fly-replay-src set. Re-emitting fly-replay would loop.
+    const res = await origFetch(`http://localhost:${server.port}/health?instance=other`, {
+      headers: { "fly-replay-src": "instance=other;t=1" },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get("fly-replay")).toBeNull();
   });
 
   test("falls through when no peer holds the room", async () => {
