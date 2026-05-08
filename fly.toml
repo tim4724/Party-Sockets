@@ -41,4 +41,4 @@ kill_timeout = 300
   memory_mb = 256
 
 [deploy]
-  strategy = "immediate"
+  strategy = "rolling"
