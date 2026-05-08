@@ -31,7 +31,7 @@ docker run -p 3000:3000 -e PORT=3000 party-sockets
 ### Connect
 
 ```js
-const ws = new WebSocket("wss://ws.couch-games.com");
+const ws = new WebSocket("wss://your-relay.fly.dev");
 const clientId = crypto.randomUUID(); // any unique string works
 ```
 
@@ -41,13 +41,13 @@ When deployed across multiple instances behind a single anycast hostname, the up
 
 ```js
 // Pin to a known instance (from a previous `created` response)
-new WebSocket("wss://ws.couch-games.com/?instance=00bb33ff");
+new WebSocket("wss://your-relay.fly.dev/?instance=00bb33ff");
 
 // Manual code entry: server reads /<code> from the path. Room codes encode
 // their home region in the top 5 bits, so the receiving machine fly-replays
-// directly to that region — no peer probe needed. Legacy or custom codes
-// fall back to a peer probe via internal DNS.
-new WebSocket("wss://ws.couch-games.com/Mu5h6Z");
+// directly to that region — no peer probe needed. Legacy codes fall back
+// to a peer probe via internal DNS.
+new WebSocket("wss://your-relay.fly.dev/Mu5h6Z");
 ```
 
 Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` / `flyReplayToRegion` helpers in `server.ts` to target a different platform.
@@ -64,12 +64,12 @@ Server-generated codes are 6-char base58 (Bitcoin alphabet — no `0`, `O`, `I`,
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
 ```
 
-The server always picks the room code — clients cannot request one. The code is returned in the `created` response.
+The server picks the room code. The code is returned in the `created` response.
 
 ### Join a room
 
 ```js
-ws.send(JSON.stringify({ type: "join", clientId, room: "A3KX" }));
+ws.send(JSON.stringify({ type: "join", clientId, room: "Mu5h6Z" }));
 ```
 
 ### Send messages
@@ -119,11 +119,11 @@ sequenceDiagram
 
     Note over A,B: Create a room
     A->>S: { type: "create", clientId: "aaa", maxClients: 4 }
-    S->>A: { type: "created", room: "A3KX", instance: "00bb33ff", region: "fra" }
+    S->>A: { type: "created", room: "Mu5h6Z", instance: "00bb33ff", region: "fra" }
 
     Note over A,B: Join a room
-    B->>S: { type: "join", clientId: "bbb", room: "A3KX" }
-    S->>B: { type: "joined", room: "A3KX", clients: ["aaa", "bbb"] }
+    B->>S: { type: "join", clientId: "bbb", room: "Mu5h6Z" }
+    S->>B: { type: "joined", room: "Mu5h6Z", clients: ["aaa", "bbb"] }
     S->>A: { type: "peer_joined", clientId: "bbb" }
 
     Note over A,B: Broadcast message
@@ -184,7 +184,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room. The server picks the code. |
+| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. |
 | `join` | `clientId`, `room` | Join an existing room |
 | `send` | `data`, `to?` | Send to all peers or a specific client |
 
