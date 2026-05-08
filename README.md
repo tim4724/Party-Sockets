@@ -26,37 +26,23 @@ docker build -t party-sockets .
 docker run -p 3000:3000 -e PORT=3000 party-sockets
 ```
 
+## Configuration
+
+| variable | default | description |
+|----------|---------|-------------|
+| `PORT` | `3000` | TCP port to listen on |
+| `INSTANCE_ID` | empty | Machine identifier echoed in the `created` message and `X-Instance-Id` response header |
+| `REGION` | empty | Region label echoed in `created` and `/metrics` |
+| `DASHBOARD_URL` | none | Where `GET /` redirects. Unset → plaintext `rooms` / `clients` snapshot |
+
 ## Usage
 
 ### Connect
 
 ```js
-const ws = new WebSocket("wss://your-relay.fly.dev");
+const ws = new WebSocket("wss://your-relay.example.com");
 const clientId = crypto.randomUUID(); // any unique string works
 ```
-
-### Multi-instance routing (optional)
-
-When deployed across multiple instances behind a single anycast hostname, the upgrade URL can carry routing hints so connections land on the machine that actually holds the room:
-
-```js
-// Pin to a known instance (from a previous `created` response)
-new WebSocket("wss://your-relay.fly.dev/?instance=00bb33ff");
-
-// Manual code entry: server reads /<code> from the path. Room codes encode
-// their home region in the top 5 bits, so the receiving machine fly-replays
-// directly to that region. Within the home region, peers probe each other
-// over internal DNS to find the machine actually holding the room.
-new WebSocket("wss://your-relay.fly.dev/Mu5h6Z");
-```
-
-Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects are emitted as `fly-replay` headers by default; swap the `flyReplayToInstance` / `flyReplayToRegion` helpers in `server.ts` to target a different platform.
-
-Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring — clients get a clean "Room not found" on join instead of a connection failure.
-
-### Room code format
-
-Server-generated codes are 6-char base58 (Bitcoin alphabet — no `0`, `O`, `I`, `l`). When `FLY_REGION` is set, the top 5 bits encode the region index from `regions.ts`, allowing any peer to route a `/<code>` or `/room/<code>` request directly to the home region without DNS probing. Locally, the full 35-bit space is random and region routing is skipped.
 
 ### Create a room
 
@@ -64,7 +50,7 @@ Server-generated codes are 6-char base58 (Bitcoin alphabet — no `0`, `O`, `I`,
 ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
 ```
 
-The server picks the room code. The code is returned in the `created` response.
+The server picks the room code — 6-char base58 (Bitcoin alphabet, no `0`/`O`/`I`/`l`) — and returns it in the `created` response.
 
 ### Join a room
 
@@ -151,14 +137,14 @@ Liveness probe.
 
 ### `GET /room/:code`
 
-Check whether a room exists on the receiving machine. Used by the peer probe to find which sibling holds a manually-typed room code.
+Check whether a room exists on this server. The handling machine's ID is returned in the `X-Instance-Id` response header.
 
 - **200** — room found: `{ clients: number, maxClients: number, origin: string }`
 - **404** — room not found: `{ error: "Room not found" }`
 
 ### `GET /metrics`
 
-Prometheus exposition format. Auto-scraped by Fly every 15s and visible in the hosted Grafana at [fly-metrics.net](https://fly-metrics.net/). Exposes:
+Prometheus exposition format. Exposes:
 
 - `party_sockets_clients` / `party_sockets_rooms` — live gauges
 - `party_sockets_clients_by_origin` / `party_sockets_rooms_by_origin` — same, labeled by origin
@@ -170,11 +156,11 @@ All series are labeled with `instance`, `region`, `version`.
 
 ### `GET /` and any other path
 
-Browsers hitting unknown paths get a **302** to the Grafana dashboard (`DASHBOARD_URL`, defaulting to Fly's hosted dashboard). The relay has no UI of its own — observability lives in Grafana.
+**302** to `DASHBOARD_URL` if set; otherwise a plaintext `rooms` / `clients` snapshot for this machine.
 
 ## Dashboard
 
-A starter Grafana dashboard lives at [`ops/grafana-dashboard.json`](ops/grafana-dashboard.json). Import it from [fly-metrics.net](https://fly-metrics.net/) → **Dashboards** → **New** → **Import** → paste the JSON. Pick the Fly Prometheus datasource when prompted. Panels: cluster live counts, RSS/heap per machine (with 200 MiB threshold line for the 256 MB VM), connection/room rate, top origins, uptime.
+Starter Grafana dashboard at [`ops/grafana-dashboard.json`](ops/grafana-dashboard.json). Import into Grafana with a Prometheus datasource.
 
 ## Protocol reference
 
@@ -206,7 +192,46 @@ All messages are JSON over WebSocket.
 bun test
 
 # Live tests against a deployed instance
-LIVE_URL=https://ws.hexstacker.com bun run test:live
+LIVE_URL=https://your-relay.example.com bun run test:live
 ```
 
-Live tests pull machine IDs from `flyctl` automatically (requires `fly` CLI and auth). Pass `LIVE_INSTANCES=id1,id2` to override. Multi-machine tests self-skip on single-machine deployments.
+## Fly deployment
+
+On [Fly.io](https://fly.io) the platform-injected env vars unlock cross-instance and cross-region routing. None are required outside Fly.
+
+| variable | role |
+|----------|------|
+| `FLY_APP_NAME` | Enables DNS-based peer probe and default `DASHBOARD_URL` |
+| `FLY_MACHINE_ID` | Fallback for `INSTANCE_ID` |
+| `FLY_REGION` | Fallback for `REGION`; enables region-encoded room codes |
+
+### Multi-instance routing
+
+When deployed across multiple machines behind one anycast hostname, the upgrade URL can carry routing hints so connections land on the machine that holds the room:
+
+```js
+// Pin to a known instance + room (from a previous `created` response)
+new WebSocket("wss://your-relay.fly.dev/Mu5h6Z?instance=00bb33ff");
+
+// Manual code entry: server reads /<code> from the path. Room codes encode
+// their home region in the top 5 bits, so the receiving machine fly-replays
+// directly to that region. Within the home region, peers probe each other
+// over internal DNS to find the machine actually holding the room.
+new WebSocket("wss://your-relay.fly.dev/Mu5h6Z");
+```
+
+Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects use `fly-replay` headers; swap the helpers in `server.ts` for other platforms.
+
+Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring — clients get a clean "Room not found" on join instead of a connection failure.
+
+### Room code region encoding
+
+When `FLY_REGION` is set, the top 5 bits of the room code encode the region index from `regions.ts`, so any peer can route a `/<code>` or `/room/<code>` request directly to the home region. Locally, the full 35-bit space is random and region routing is skipped.
+
+### Dashboard default
+
+When `FLY_APP_NAME` is set, `DASHBOARD_URL` defaults to Fly's hosted Grafana for the app.
+
+### Live tests
+
+`bun run test:live` pulls machine IDs from `flyctl` automatically (requires `fly` CLI and auth). Pass `LIVE_INSTANCES=id1,id2` to override. Multi-machine tests self-skip on single-machine deployments.
