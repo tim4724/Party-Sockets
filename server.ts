@@ -47,10 +47,6 @@ const DASHBOARD_URL = process.env.DASHBOARD_URL
 // slow sibling without giving up.
 const PEER_PROBE_TIMEOUT_MS = 3000;
 
-// Path segments that share the 4–8-char alpha-num shape with room codes but
-// are well-known endpoints. Anything in here skips the candidate-code
-// routing so it can't be peer-probed.
-const RESERVED_PATHS = new Set(["health", "stats", "favicon", "metrics"]);
 // Cap per-origin Prometheus series to avoid blowing up cardinality on a
 // scanner cycling through random Origin headers. The total-origin count
 // is exposed separately as `party_sockets_origins_tracked` so visibility
@@ -64,8 +60,9 @@ const serverStartedAt = Date.now();
 let draining = false;
 
 // --- Stats ---
-// Counters since process start. Lost on machine restart / scale-to-zero, which
-// is why the status page frames numbers as "since boot" alongside the uptime.
+// Counters since process start. Lost on machine restart / scale-to-zero, so
+// the *_total metrics in /metrics are scoped to the current process — Grafana
+// rate() handles the resets.
 
 interface OriginCounters {
   connections: number;
@@ -80,29 +77,26 @@ function incrementStat(origin: string, field: keyof OriginCounters) {
   entry[field]++;
 }
 
-function formatUptime(ms: number): string {
-  const s = Math.floor(ms / 1000);
-  const days = Math.floor(s / 86400);
-  const hours = Math.floor((s % 86400) / 3600);
-  const mins = Math.floor((s % 3600) / 60);
-  const parts: string[] = [];
-  if (days > 0) parts.push(`${days}d`);
-  if (hours > 0) parts.push(`${hours}h`);
-  parts.push(`${mins}m`);
-  return parts.join(" ");
-}
-
 // --- Room code generation ---
 // 6-char base58 codes. When FLY_REGION is set, the top 5 bits encode the
 // region index so any peer can decode the code and fly-replay directly to the
-// home region — no peer probe needed for new-format codes. Locally (no
-// FLY_REGION) we use the full 35-bit random space and skip region routing.
+// home region. Locally (no FLY_REGION) we use the full 35-bit random space;
+// the routing layer is a no-op there because FLY_APP_NAME is also unset.
 
 const CODE_LENGTH = 6;
 const BODY_BITS = 30;
 const TOTAL_BITS = BODY_BITS + REGION_BITS;
 const MAX_CODE_VALUE = Math.pow(2, TOTAL_BITS) - 1;
 const REGION_IDX = REGION ? encodeRegion(REGION) : null;
+
+// Multiplication, not <<, when packing the region prefix. JS bitwise ops
+// coerce to int32, so any region index whose bit pattern lands in the int32
+// sign bit (idx 2 with BODY_BITS=30, i.e. nearly every entry now that
+// REGIONS is alphabetical) would shift into the sign bit and silently
+// produce a negative value.
+const BODY_DIVISOR = Math.pow(2, BODY_BITS);
+const REGION_PREFIX = REGION_IDX !== null ? REGION_IDX * BODY_DIVISOR : 0;
+const BODY_BIT_COUNT = REGION_IDX !== null ? BODY_BITS : TOTAL_BITS;
 
 function randomBits(bits: number): number {
   // BigInt avoids the float-precision loss we'd hit combining two 32-bit
@@ -113,40 +107,29 @@ function randomBits(bits: number): number {
   return Number(combined & ((1n << BigInt(bits)) - 1n));
 }
 
-// Multiplication, not <<. JS bitwise ops coerce to int32, so any region
-// index >= 2 with BODY_BITS = 30 would shift into the sign bit and
-// silently produce a negative value.
-export function packRoomCodeValue(regionIdx: number | null, body: number): number {
-  return regionIdx !== null ? regionIdx * Math.pow(2, BODY_BITS) + body : body;
-}
-
 // Caller must rooms.set the returned code synchronously. Bun's WS message
 // handler is single-threaded JS so no other create can race between the
 // has() check here and the caller's set().
 function generateRoomCode(): string {
   for (let attempt = 0; attempt < 10; attempt++) {
-    const body = randomBits(REGION_IDX !== null ? BODY_BITS : TOTAL_BITS);
-    const value = packRoomCodeValue(REGION_IDX, body);
+    const value = REGION_PREFIX + randomBits(BODY_BIT_COUNT);
     const code = base58.encode(value, CODE_LENGTH);
     if (!rooms.has(code)) return code;
   }
   throw new Error("Could not generate a unique room code");
 }
 
-interface DecodedCode {
-  region: string | null;
-}
-
-// Pure decode: returns { region } if the code is a valid 6-char base58 code
-// whose top 5 bits map to a known region. Caller decides what to do with
-// that information (route on Fly, ignore locally, etc).
-export function tryDecodeRoomCode(code: string): DecodedCode | null {
+// Pure decode: returns the region name if the code is a valid 6-char base58
+// code whose top 5 bits map to a known region. Returns null for any malformed
+// or unassigned-region code. Caller decides what to do with the result (route
+// on Fly, ignore locally, etc).
+export function tryDecodeRoomCode(code: string): string | null {
   if (code.length !== CODE_LENGTH) return null;
   const value = base58.decode(code);
   if (value === null) return null;
   if (value < 0 || value > MAX_CODE_VALUE) return null;
-  const regionIdx = Math.floor(value / Math.pow(2, BODY_BITS));
-  return { region: decodeRegion(regionIdx) };
+  const regionIdx = Math.floor(value / BODY_DIVISOR);
+  return decodeRegion(regionIdx);
 }
 
 
@@ -161,15 +144,9 @@ interface Peer {
 }
 
 async function getPeers(): Promise<Peer[]> {
-  // PEERS=http://localhost:3001,http://localhost:3002 enables a non-Fly path
-  // for local multi-instance demos. id is the base URL when on this path.
-  const peersEnv = process.env.PEERS;
-  if (peersEnv) {
-    return peersEnv.split(",").map(s => s.trim()).filter(Boolean).map((u) => {
-      const base = u.replace(/\/$/, "");
-      return { id: base, region: "" };
-    });
-  }
+  // Re-read env at call time so tests can mutate FLY_APP_NAME after module
+  // load. The module-level FLY_APP constant is for code paths that genuinely
+  // need a snapshot (e.g. DASHBOARD_URL).
   const app = process.env.FLY_APP_NAME ?? "";
   if (!app) return [];
   const dns = await import("node:dns/promises");
@@ -187,13 +164,13 @@ async function getPeers(): Promise<Peer[]> {
   }
 }
 
-// Empty `region` means "probe everywhere" — used for legacy codes that
-// don't encode their home region.
+// Probes siblings in the given region to find which one holds the code. All
+// codes encode their home region, so callers always pass a specific region —
+// we never probe across regions. Empty `region` short-circuits to null.
 export async function findRoomOnPeers(code: string, region: string): Promise<string | null> {
   const app = process.env.FLY_APP_NAME ?? "";
-  let peers = await getPeers();
-  if (region) peers = peers.filter((p) => p.region === region);
-  if (peers.length === 0) return null;
+  if (!app || !region) return null;
+  const peers = (await getPeers()).filter((p) => p.region === region);
   const probes = peers.map(async ({ id }) => {
     try {
       const res = await fetch(
@@ -497,39 +474,11 @@ const server = Bun.serve({
         return new Response(null, { status: 302, headers: { Location: path } });
       }
     }
-    // Pull a candidate room code out of either /<code> (WS upgrade) or
-    // /room/<code> (HTTP existence check). Either path participates in
-    // routing. Well-known endpoint names that happen to fit the 4-8 char
-    // alpha-num shape must be excluded — otherwise they trigger a
-    // cross-region peer probe before reaching their handler. (See the
-    // /health-as-room-code prod incident.)
-    let candidateCode: string | null = null;
-    const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{4,8})$/);
-    if (pathRoomMatch && !RESERVED_PATHS.has(pathRoomMatch[1])) {
-      candidateCode = pathRoomMatch[1];
-    } else {
-      const apiRoomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
-      if (apiRoomMatch) candidateCode = decodeURIComponent(apiRoomMatch[1]);
-    }
 
-    if (candidateCode && !requestedInstance) {
-      // New-format codes self-route: decode the region from the code itself.
-      // Only act on this when we know our own region (REGION_IDX set) — local
-      // dev shouldn't emit fly-replay headers.
-      const decoded = tryDecodeRoomCode(candidateCode);
-      if (REGION_IDX !== null && decoded?.region && decoded.region !== REGION) {
-        return flyReplayToRegion(decoded.region);
-      }
-      // Same region or legacy/non-decodable code: fall through to peer probe.
-      // For same-region new-format codes we know the room can only live on a
-      // sibling in our region — skip cross-region peers. For legacy codes the
-      // region is unknown, so probe everyone.
-      if (!rooms.has(candidateCode)) {
-        const sameRegion = decoded?.region === REGION && REGION !== "";
-        const peerInstance = await findRoomOnPeers(candidateCode, sameRegion ? REGION : "");
-        if (peerInstance) return flyReplayToInstance(peerInstance);
-      }
-    }
+    // Per-machine endpoints — handled before candidate-code routing so a path
+    // like /health (also 6 chars) can't be mistaken for a room code. (See the
+    // /health-as-room-code prod incident.) Sits below ?instance= because
+    // /health?instance=foo legitimately means "/health on machine foo".
     if (url.pathname === "/health") {
       return new Response(JSON.stringify({ status: "ok" }), {
         headers: {
@@ -543,10 +492,31 @@ const server = Bun.serve({
         headers: { "Content-Type": "text/plain; version=0.0.4" },
       });
     }
-    const roomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
-    if (roomMatch) {
-      const code = decodeURIComponent(roomMatch[1]);
-      const room = rooms.get(code);
+
+    // Pull a candidate room code out of either /<code> (WS upgrade) or
+    // /room/<code> (HTTP existence check). The path form is exactly 6 chars,
+    // matching a real code length.
+    const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{6})$/);
+    const apiRoomMatch = pathRoomMatch ? null : url.pathname.match(/^\/room\/([^/]+)$/);
+    const candidateCode = pathRoomMatch?.[1]
+      ?? (apiRoomMatch ? decodeURIComponent(apiRoomMatch[1]) : null);
+
+    if (candidateCode && !requestedInstance && REGION_IDX !== null) {
+      // Codes self-route: decode the region from the code's top 5 bits.
+      // Skip locally (REGION_IDX null) — no fly-replay outside Fly.
+      const region = tryDecodeRoomCode(candidateCode);
+      if (region && region !== REGION) {
+        return flyReplayToRegion(region);
+      }
+      // Same-region: probe siblings to find which one holds the room.
+      if (region === REGION && !rooms.has(candidateCode)) {
+        const peerInstance = await findRoomOnPeers(candidateCode, REGION);
+        if (peerInstance) return flyReplayToInstance(peerInstance);
+      }
+    }
+
+    if (apiRoomMatch && candidateCode) {
+      const room = rooms.get(candidateCode);
       const headers = {
         "Content-Type": "application/json",
         "Access-Control-Allow-Origin": "*",

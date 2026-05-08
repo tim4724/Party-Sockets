@@ -45,8 +45,8 @@ new WebSocket("wss://your-relay.fly.dev/?instance=00bb33ff");
 
 // Manual code entry: server reads /<code> from the path. Room codes encode
 // their home region in the top 5 bits, so the receiving machine fly-replays
-// directly to that region — no peer probe needed. Legacy codes fall back
-// to a peer probe via internal DNS.
+// directly to that region. Within the home region, peers probe each other
+// over internal DNS to find the machine actually holding the room.
 new WebSocket("wss://your-relay.fly.dev/Mu5h6Z");
 ```
 

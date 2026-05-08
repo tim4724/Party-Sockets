@@ -1,9 +1,9 @@
 app = "party-sockets"
 primary_region = "fra"
 
-# Give the relay's drain logic up to 5 min (Fly's max) to let active games
-# finish before forced shutdown. Empty machines stop instantly because drain
-# exits as soon as rooms.size = 0.
+# Give the relay's drain logic up to 5 min to let active games finish before
+# forced shutdown. Empty machines stop instantly because drain exits as soon
+# as rooms.size = 0.
 kill_timeout = 300
 
 [build]
