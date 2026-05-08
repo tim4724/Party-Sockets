@@ -19,6 +19,123 @@ bun run server.ts
 PORT=8080 bun run server.ts
 ```
 
+## Usage
+
+A host creates a room; one or more guests join it.
+
+### Host
+
+```js
+const ws = new WebSocket("wss://your-relay.example.com");
+const clientId = crypto.randomUUID(); // any stable string works — same clientId re-identifies a reconnect
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
+};
+
+ws.onerror = (event) => console.error("websocket error", event);
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  switch (msg.type) {
+    case "created":     console.log("room code:", msg.room); break; // 6-char base58
+    case "peer_joined": console.log("peer joined:", msg.clientId); break;
+    case "peer_left":   console.log("peer left:", msg.clientId); break;
+    case "message":     console.log("from", msg.from, msg.data); break;
+    case "error":       console.error("server error:", msg.message); break;
+  }
+};
+```
+
+### Guest
+
+```js
+const ws = new WebSocket("wss://your-relay.example.com");
+const clientId = crypto.randomUUID(); // any stable string works — same clientId re-identifies a reconnect
+
+ws.onopen = () => {
+  ws.send(JSON.stringify({ type: "join", clientId, room: "Mu5h6Z" }));
+};
+
+ws.onerror = (event) => console.error("websocket error", event);
+
+ws.onmessage = (event) => {
+  const msg = JSON.parse(event.data);
+  // Guests also receive `peer_joined`, `peer_left`, `message`, and `error` —
+  // see the host snippet above for the full event surface.
+  if (msg.type === "joined") {
+    // Broadcast to all peers. Add `to: "<peer-id>"` to target a single client.
+    ws.send(JSON.stringify({ type: "send", data: { move: "left" } }));
+  }
+};
+```
+
+### Reconnect
+
+Joining with the same `clientId` replaces the old connection — no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`; treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
+
+Hosts reconnect the same way as guests: send `join` with the original `clientId` and room code, not another `create`. Other peers are not notified — their existing peer state is unchanged.
+
+```js
+ws.onclose = (event) => {
+  if (event.code === 4000) return; // replaced by a newer connection — don't reconnect
+  // ...your reconnect logic
+};
+```
+
+### Message flow
+
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant S as Server
+    participant G as Guest
+
+    Note over H,G: Create a room
+    H->>S: { type: "create", clientId: "host", maxClients: 4 }
+    S->>H: { type: "created", room: "Mu5h6Z", instance: "00bb33ff", region: "fra" }
+
+    Note over H,G: Join a room
+    G->>S: { type: "join", clientId: "guest", room: "Mu5h6Z" }
+    S->>G: { type: "joined", room: "Mu5h6Z", clients: ["host", "guest"] }
+    S->>H: { type: "peer_joined", clientId: "guest" }
+
+    Note over H,G: Broadcast message (sender excluded)
+    H->>S: { type: "send", data: { move: "left" } }
+    S->>G: { type: "message", from: "host", data: { move: "left" } }
+
+    Note over H,G: Targeted message
+    G->>S: { type: "send", to: "host", data: "hello" }
+    S->>H: { type: "message", from: "guest", data: "hello" }
+
+    Note over H,G: Disconnect
+    G--xS: connection closed
+    S->>H: { type: "peer_left", clientId: "guest" }
+```
+
+## Protocol reference
+
+All messages are JSON over WebSocket.
+
+### Client → Server
+
+| type | fields | description |
+|------|--------|-------------|
+| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. |
+| `join` | `clientId`, `room` | Join an existing room |
+| `send` | `data`, `to?` | Send to all peers or a specific client |
+
+### Server → Client
+
+| type | fields | description |
+|------|--------|-------------|
+| `created` | `room`, `instance`, `region` | Room created. `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
+| `joined` | `room`, `clients[]` | Joined room, list of current client IDs |
+| `peer_joined` | `clientId` | A new peer joined the room |
+| `peer_left` | `clientId` | A peer disconnected |
+| `message` | `from`, `data` | Relayed message from a peer |
+| `error` | `message` | Error description |
+
 ## Docker
 
 ```sh
@@ -34,96 +151,6 @@ docker run -p 3000:3000 -e PORT=3000 party-sockets
 | `INSTANCE_ID` | empty | Machine identifier echoed in the `created` message and `X-Instance-Id` response header |
 | `REGION` | empty | Region label echoed in `created` and `/metrics` |
 | `DASHBOARD_URL` | none | Where `GET /` redirects. Unset → plaintext `rooms` / `clients` snapshot |
-
-## Usage
-
-### Connect
-
-```js
-const ws = new WebSocket("wss://your-relay.example.com");
-const clientId = crypto.randomUUID(); // any unique string works
-```
-
-### Create a room
-
-```js
-ws.send(JSON.stringify({ type: "create", clientId, maxClients: 4 }));
-```
-
-The server picks the room code — 6-char base58 (Bitcoin alphabet, no `0`/`O`/`I`/`l`) — and returns it in the `created` response.
-
-### Join a room
-
-```js
-ws.send(JSON.stringify({ type: "join", clientId, room: "Mu5h6Z" }));
-```
-
-### Send messages
-
-```js
-// Broadcast to all peers
-ws.send(JSON.stringify({ type: "send", data: { move: "left" } }));
-
-// Send to a specific client
-ws.send(JSON.stringify({ type: "send", to: "uuid-of-target", data: "hello" }));
-```
-
-### Handle events
-
-```js
-ws.onmessage = (event) => {
-  const msg = JSON.parse(event.data);
-  switch (msg.type) {
-    case "created":     // room created, msg.room is the room code
-    case "joined":      // joined room, msg.clients is the list of client IDs
-    case "peer_joined": // new peer, msg.clientId
-    case "peer_left":   // peer disconnected, msg.clientId
-    case "message":     // relayed message, msg.from + msg.data
-    case "error":       // error, msg.message
-  }
-};
-```
-
-### Reconnect
-
-Joining with the same `clientId` replaces the old connection — no special reconnect message needed. The old WebSocket is closed by the server with code `4000` and reason `"replaced"`, so if you're managing a reconnect loop, treat that close as terminal rather than retrying.
-
-```js
-ws.onclose = (event) => {
-  if (event.code === 4000) return; // replaced by a newer connection, don't reconnect
-  // ...your reconnect logic
-};
-```
-
-### Message flow
-
-```mermaid
-sequenceDiagram
-    participant A as Client A
-    participant S as Server
-    participant B as Client B
-
-    Note over A,B: Create a room
-    A->>S: { type: "create", clientId: "aaa", maxClients: 4 }
-    S->>A: { type: "created", room: "Mu5h6Z", instance: "00bb33ff", region: "fra" }
-
-    Note over A,B: Join a room
-    B->>S: { type: "join", clientId: "bbb", room: "Mu5h6Z" }
-    S->>B: { type: "joined", room: "Mu5h6Z", clients: ["aaa", "bbb"] }
-    S->>A: { type: "peer_joined", clientId: "bbb" }
-
-    Note over A,B: Broadcast message
-    A->>S: { type: "send", data: { move: "left" } }
-    S->>B: { type: "message", from: "aaa", data: { move: "left" } }
-
-    Note over A,B: Targeted message
-    B->>S: { type: "send", to: "aaa", data: "hello" }
-    S->>A: { type: "message", from: "bbb", data: "hello" }
-
-    Note over A,B: Disconnect
-    B--xS: connection closed
-    S->>A: { type: "peer_left", clientId: "bbb" }
-```
 
 ## HTTP API
 
@@ -149,7 +176,7 @@ Prometheus exposition format. Exposes:
 - `party_sockets_clients` / `party_sockets_rooms` — live gauges
 - `party_sockets_clients_by_origin` / `party_sockets_rooms_by_origin` — same, labeled by origin
 - `party_sockets_connections_total` / `party_sockets_rooms_created_total` — since-boot counters per origin
-- `party_sockets_origins_tracked` — distinct origins seen since boot (size of internal map)
+- `party_sockets_origins_tracked` — origins currently tracked (size of internal map; capped at 500 with LRU eviction)
 - `process_resident_memory_bytes`, `process_heap_used_bytes`, `process_uptime_seconds` — runtime health
 
 All series are labeled with `instance`, `region`, `version`.
@@ -161,29 +188,6 @@ All series are labeled with `instance`, `region`, `version`.
 ## Dashboard
 
 Starter Grafana dashboard at [`ops/grafana-dashboard.json`](ops/grafana-dashboard.json). Import into Grafana with a Prometheus datasource.
-
-## Protocol reference
-
-All messages are JSON over WebSocket.
-
-### Client → Server
-
-| type | fields | description |
-|------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. |
-| `join` | `clientId`, `room` | Join an existing room |
-| `send` | `data`, `to?` | Send to all peers or a specific client |
-
-### Server → Client
-
-| type | fields | description |
-|------|--------|-------------|
-| `created` | `room`, `instance`, `region` | Room created. `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
-| `joined` | `room`, `clients[]` | Joined room, list of current client IDs |
-| `peer_joined` | `clientId` | A new peer joined the room |
-| `peer_left` | `clientId` | A peer disconnected |
-| `message` | `from`, `data` | Relayed message from a peer |
-| `error` | `message` | Error description |
 
 ## Test
 
