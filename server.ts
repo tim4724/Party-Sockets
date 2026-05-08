@@ -163,10 +163,12 @@ async function getPeers(): Promise<Peer[]> {
   }
 }
 
-async function findRoomOnPeers(code: string, opts: { region?: string } = {}): Promise<string | null> {
+// Empty `region` means "probe everywhere" — used for legacy codes that
+// don't encode their home region.
+async function findRoomOnPeers(code: string, region: string): Promise<string | null> {
   const app = process.env.FLY_APP_NAME ?? "";
   let peers = await getPeers();
-  if (opts.region) peers = peers.filter((p) => p.region === opts.region);
+  if (region) peers = peers.filter((p) => p.region === region);
   if (peers.length === 0) return null;
   const probes = peers.map(async ({ id }) => {
     try {
@@ -993,10 +995,7 @@ const server = Bun.serve({
       // region is unknown, so probe everyone.
       if (!rooms.has(candidateCode)) {
         const sameRegion = decoded?.region === REGION && REGION !== "";
-        const peerInstance = await findRoomOnPeers(
-          candidateCode,
-          sameRegion ? { region: REGION } : {},
-        );
+        const peerInstance = await findRoomOnPeers(candidateCode, sameRegion ? REGION : "");
         if (peerInstance) return flyReplayToInstance(peerInstance);
       }
     }
