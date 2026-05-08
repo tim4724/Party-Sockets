@@ -528,10 +528,13 @@ describe("instance routing", () => {
   });
 
   test("/<code> for unknown room falls through when no peers are discoverable", async () => {
-    // FLY_APP_NAME is unset in tests, so findRoomOnPeers short-circuits.
-    // A WS upgrade to /ZZZZ should complete; the join failure surfaces as the
-    // usual "Room not found" via the join message, not a connection error.
-    const res = await fetch(`http://localhost:${server.port}/ZZZZ`);
+    // Same-region 6-char code: enters the routing block, hits the same-region
+    // peer probe. FLY_APP_NAME is unset in this describe, so findRoomOnPeers
+    // returns null without probing. A WS upgrade to /<code> should complete;
+    // the join failure surfaces as the usual "Room not found" via the join
+    // message, not a connection error.
+    const code = codeForRegion("fra", 42);
+    const res = await fetch(`http://localhost:${server.port}/${code}`);
     expect(res.status).toBe(200);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
@@ -567,22 +570,11 @@ describe("peer probe", () => {
     origFetch = globalThis.fetch;
     globalThis.fetch = (async (url: any, init?: any) => {
       const u = typeof url === "string" ? url : url.toString();
-      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:\d+(\/[^?]*)/);
+      const m = u.match(/^http:\/\/([a-z0-9]+)\.vm\.test-app\.internal:\d+\//);
       if (m) {
         const id = m[1];
-        const path = m[2];
         const status = peerStatus.get(id) ?? 404;
-        if (status !== 200) return new Response("not found", { status });
-        if (path === "/stats") {
-          return Response.json({
-            instance: id,
-            region: id === "abc123" ? "fra" : "iad",
-            uptimeMs: 60_000,
-            rooms: 2,
-            clients: 5,
-          });
-        }
-        return new Response("{}", { status });
+        return new Response(status === 200 ? "{}" : "not found", { status });
       }
       return origFetch(url, init);
     }) as typeof globalThis.fetch;
