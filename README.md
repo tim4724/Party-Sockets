@@ -172,6 +172,10 @@ All series are labeled with `instance`, `region`, `version`.
 
 Browsers hitting unknown paths get a **302** to the Grafana dashboard (`DASHBOARD_URL`, defaulting to Fly's hosted dashboard). The relay has no UI of its own — observability lives in Grafana.
 
+## Dashboard
+
+A starter Grafana dashboard lives at [`ops/grafana-dashboard.json`](ops/grafana-dashboard.json). Import it from [fly-metrics.net](https://fly-metrics.net/) → **Dashboards** → **New** → **Import** → paste the JSON. Pick the Fly Prometheus datasource when prompted. Panels: cluster live counts, RSS/heap per machine (with 200 MiB threshold line for the 256 MB VM), connection/room rate, top origins, uptime.
+
 ## Protocol reference
 
 All messages are JSON over WebSocket.
