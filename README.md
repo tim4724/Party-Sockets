@@ -151,10 +151,26 @@ Liveness probe.
 
 ### `GET /room/:code`
 
-Check whether a room exists.
+Check whether a room exists on the receiving machine. Used by the peer probe to find which sibling holds a manually-typed room code.
 
 - **200** — room found: `{ clients: number, maxClients: number, origin: string }`
 - **404** — room not found: `{ error: "Room not found" }`
+
+### `GET /metrics`
+
+Prometheus exposition format. Auto-scraped by Fly every 15s and visible in the hosted Grafana at [fly-metrics.net](https://fly-metrics.net/). Exposes:
+
+- `party_sockets_clients` / `party_sockets_rooms` — live gauges
+- `party_sockets_clients_by_origin` / `party_sockets_rooms_by_origin` — same, labeled by origin
+- `party_sockets_connections_total` / `party_sockets_rooms_created_total` — since-boot counters per origin
+- `party_sockets_origins_tracked` — distinct origins seen since boot (size of internal map)
+- `process_resident_memory_bytes`, `process_heap_used_bytes`, `process_uptime_seconds` — runtime health
+
+All series are labeled with `instance`, `region`, `version`.
+
+### `GET /` and any other path
+
+Browsers hitting unknown paths get a **302** to the Grafana dashboard (`DASHBOARD_URL`, defaulting to Fly's hosted dashboard). The relay has no UI of its own — observability lives in Grafana.
 
 ## Protocol reference
 

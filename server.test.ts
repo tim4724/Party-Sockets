@@ -429,29 +429,24 @@ describe("room info endpoint", () => {
   });
 });
 
-describe("stats endpoint", () => {
+describe("metrics endpoint", () => {
   const HTTP_URL = `http://localhost:${server.port}`;
 
-  test("returns instance metadata and live counts", async () => {
+  test("returns Prometheus text with live counts and per-origin counters", async () => {
     const ws = track(await connect());
     sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
     await waitForType(ws, "created");
 
-    const res = await fetch(`${HTTP_URL}/stats`);
+    const res = await fetch(`${HTTP_URL}/metrics`);
     expect(res.status).toBe(200);
-    expect(res.headers.get("access-control-allow-origin")).toBe("*");
-    const body = await res.json();
-    expect(body).toMatchObject({
-      instance: expect.any(String),
-      region: expect.any(String),
-      rooms: 1,
-      clients: 1,
-      publicRooms: expect.any(Number),
-      publicClients: expect.any(Number),
-    });
-    expect(typeof body.uptimeMs).toBe("number");
-    expect(Number.isFinite(body.uptimeMs)).toBe(true);
-    expect(body.uptimeMs >= 0).toBe(true);
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text).toContain("# TYPE party_sockets_clients gauge");
+    expect(text).toMatch(/party_sockets_clients\{[^}]+\}\s+1$/m);
+    expect(text).toMatch(/party_sockets_rooms\{[^}]+\}\s+1$/m);
+    expect(text).toContain("party_sockets_connections_total");
+    expect(text).toContain("process_resident_memory_bytes");
+    expect(text).toContain("process_uptime_seconds");
   });
 });
 
@@ -629,18 +624,28 @@ describe("peer probe", () => {
       headers: {
         "fly-replay-src": "instance=other;t=1",
         "Upgrade": "websocket",
+        "Connection": "Upgrade",
+        "Sec-WebSocket-Version": "13",
+        "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
       },
     });
-    expect(res.status).not.toBe(302);
+    expect([101, 200, 426]).toContain(res.status);
     expect(res.headers.get("location")).toBeNull();
   });
 
-  test("falls through when no peer holds the room", async () => {
+  test("non-WS / and unknown paths redirect to the dashboard", async () => {
+    const res = await origFetch(`http://localhost:${server.port}/`, { redirect: "manual" });
+    expect(res.status).toBe(302);
+    expect(res.headers.get("location")).toContain("fly-metrics.net");
+  });
+
+  test("falls through to redirect when no peer holds the room", async () => {
     peerStatus.set("abc123", 404);
     peerStatus.set("def456", 404);
 
-    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
-    expect(res.status).toBe(200); // status page renders
+    const res = await origFetch(`http://localhost:${server.port}/A3KX`, { redirect: "manual" });
+    // Browser GET on /A3KX (non-WS) hits the catch-all redirect.
+    expect(res.status).toBe(302);
     expect(res.headers.get("fly-replay")).toBeNull();
   });
 
@@ -658,57 +663,21 @@ describe("peer probe", () => {
     expect(ms).toBeLessThan(500);
   });
 
-  test("/stats is not treated as a room code", async () => {
-    const res = await origFetch(`http://localhost:${server.port}/stats`);
+  test("/metrics is not treated as a room code", async () => {
+    const res = await origFetch(`http://localhost:${server.port}/metrics`);
     expect(res.status).toBe(200);
-    const body = await res.json();
-    expect(body).toHaveProperty("instance");
+    expect(res.headers.get("content-type")).toContain("text/plain");
+    const text = await res.text();
+    expect(text).toContain("party_sockets_clients");
   });
 
-  test("skips probe and serves locally when room is on this machine", async () => {
+  test("skips probe and redirects when local room exists", async () => {
     rooms.set("A3KX", { maxClients: 4, origin: "test", clients: new Map() });
-    // No peerStatus entries — if the probe ran, both peers would 404 and we'd
-    // still fall through. The signal we're testing is that the probe is short-
-    // circuited by the local rooms.has() check, so we verify behavior is
-    // identical to the local-room case.
-    const res = await origFetch(`http://localhost:${server.port}/A3KX`);
-    expect(res.status).toBe(200);
+    // No peerStatus entries — local hit short-circuits the probe; non-WS
+    // GET still falls through to the catch-all redirect.
+    const res = await origFetch(`http://localhost:${server.port}/A3KX`, { redirect: "manual" });
+    expect(res.status).toBe(302);
     expect(res.headers.get("fly-replay")).toBeNull();
-  });
-
-  test("status page renders one row per DNS-known peer with placeholders", async () => {
-    // Server-side rendering trusts DNS for the machine list. peerStatus only
-    // affects the *client-side* /stats fetch (which we don't run here), so
-    // we don't need to set anything on it for this test.
-    const res = await origFetch(`http://localhost:${server.port}/`);
-    expect(res.status).toBe(200);
-    const html = await res.text();
-    expect(html).toContain('href="?instance=abc123"');
-    expect(html).toContain('href="?instance=def456"');
-    expect(html).toContain('data-stats-url="/stats?instance=abc123"');
-    expect(html).toContain('data-stats-url="/stats?instance=def456"');
-    expect(html).toContain("fra");
-    expect(html).toContain("iad");
-    // Self + 2 peers from DNS.
-    expect(html).toMatch(/machines<\/span>[\s\S]*?<span class="num">3<\/span>/);
-    expect(html).toContain('class="row machine current"');
-    // Peer counts are placeholders — browser fills them via /stats?instance=<id>.
-    expect(html).toMatch(/class="row machine peer"[\s\S]*?<span class="m-counts">…<\/span>/);
-  });
-
-  test("origin names are HTML-escaped (Origin header is user-controlled)", async () => {
-    // Inject a room with a hostile origin and confirm the rendered status
-    // page escapes it instead of letting it break out into HTML.
-    rooms.set("XSSXSS", {
-      maxClients: 1,
-      origin: "https://evil\"><script>alert(1)</script>",
-      clients: new Map(),
-    });
-    const res = await origFetch(`http://localhost:${server.port}/`);
-    const html = await res.text();
-    rooms.delete("XSSXSS");
-    expect(html).not.toContain("<script>alert(1)</script>");
-    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
   });
 
   test("findRoomOnPeers filters to the requested region", async () => {

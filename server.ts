@@ -32,7 +32,6 @@ interface Room {
 // --- Constants ---
 
 const { version: VERSION } = await import("./package.json");
-const FAVICON_SVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64"><rect width="64" height="64" rx="14" fill="#1a1a1a"/><line x1="32" y1="18" x2="18" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="32" y1="18" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><line x1="18" y1="42" x2="46" y2="42" stroke="#888" stroke-width="3.5" stroke-linecap="round"/><circle cx="32" cy="18" r="8" fill="#f472b6"/><circle cx="18" cy="42" r="8" fill="#60a5fa"/><circle cx="46" cy="42" r="8" fill="#4ade80"/></svg>`;
 
 const PORT = parseInt(process.env.PORT || "3000", 10);
 
@@ -40,6 +39,9 @@ const PORT = parseInt(process.env.PORT || "3000", 10);
 // platform leak; on other platforms set INSTANCE_ID / REGION directly.
 const INSTANCE_ID = process.env.INSTANCE_ID ?? process.env.FLY_MACHINE_ID ?? "";
 const REGION = process.env.REGION ?? process.env.FLY_REGION ?? "";
+const FLY_APP = process.env.FLY_APP_NAME ?? "";
+const DASHBOARD_URL = process.env.DASHBOARD_URL
+  ?? (FLY_APP ? `https://fly-metrics.net/d/fly-app/fly-app?var-app=${encodeURIComponent(FLY_APP)}` : "https://fly-metrics.net/");
 // Peer probe (findRoomOnPeers) blocks the user's request when typing a code,
 // but cross-region cold-connections need real headroom. 3s tolerates a single
 // slow sibling without giving up.
@@ -197,39 +199,6 @@ export async function findRoomOnPeers(code: string, region: string): Promise<str
   return (await Promise.all(probes)).find((x) => x) ?? null;
 }
 
-interface OriginAgg {
-  live: { rooms: number; clients: number };
-  totals: { connections: number; rooms: number };
-}
-
-interface PeerStats {
-  instance: string;
-  region: string;
-  uptimeMs: number;
-  rooms: number;
-  clients: number;
-  // Counts excluding localhost/RFC-1918 origins, so the client-side
-  // "show local" toggle stays accurate when aggregating across machines.
-  publicRooms: number;
-  publicClients: number;
-  origins: Record<string, OriginAgg>;
-}
-
-const IS_LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.|192\.168\.|10\.|172\.(1[6-9]|2\d|3[01])\.)/;
-function isLocalOriginName(o: string): boolean { return IS_LOCAL_ORIGIN.test(o); }
-
-function buildOriginAggForSelf(origins: Map<string, OriginStats>): Record<string, OriginAgg> {
-  const out: Record<string, OriginAgg> = {};
-  const names = new Set<string>([...origins.keys(), ...originCounters.keys()]);
-  for (const name of names) {
-    out[name] = {
-      live: origins.get(name) ?? { rooms: 0, clients: 0 },
-      totals: originCounters.get(name) ?? { connections: 0, rooms: 0 },
-    };
-  }
-  return out;
-}
-
 function flyReplayToInstance(id: string): Response {
   // instance= forces cross-region routing; timeout=5s lets a scaled-to-zero
   // or suspended target wake up; fallback=force_self handles unreachable or
@@ -377,7 +346,7 @@ function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: string; data: u
   }
 }
 
-// --- Status page ---
+// --- Metrics ---
 
 interface OriginStats {
   rooms: number;
@@ -404,688 +373,64 @@ function getOriginStats(): { roomCount: number; clientCount: number; origins: Ma
   return { roomCount, clientCount, origins };
 }
 
-function escapeHtml(s: string): string {
-  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+// Escape Prometheus label values per exposition format: backslash, newline,
+// double quote.
+function promLabel(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/\n/g, "\\n").replace(/"/g, '\\"');
 }
 
-function fmt(n: number): string {
-  return n.toLocaleString("en-US");
-}
+function metricsText(): string {
+  const { roomCount, clientCount, origins } = getOriginStats();
+  const mem = process.memoryUsage();
+  const uptimeS = (Date.now() - serverStartedAt) / 1000;
+  const inst = promLabel(INSTANCE_ID || "local");
+  const region = promLabel(REGION || "local");
+  const ver = promLabel(VERSION);
+  const lbl = `instance="${inst}",region="${region}",version="${ver}"`;
+  const lines: string[] = [];
 
-function statusPage(origins: Map<string, OriginStats>, peers: Peer[], ipFamily?: string): string {
-  const uptimeMs = Date.now() - serverStartedAt;
+  lines.push(`# HELP party_sockets_clients Live WebSocket clients`);
+  lines.push(`# TYPE party_sockets_clients gauge`);
+  lines.push(`party_sockets_clients{${lbl}} ${clientCount}`);
 
-  // This-machine view only. Cluster aggregation (peer counts, peer origins)
-  // happens client-side after the page loads — see loadPeerStats() below.
-  const allOriginNames = new Set<string>([...origins.keys(), ...originCounters.keys()]);
-  const hasLocal = Array.from(allOriginNames).some(isLocalOriginName);
+  lines.push(`# HELP party_sockets_rooms Live rooms`);
+  lines.push(`# TYPE party_sockets_rooms gauge`);
+  lines.push(`party_sockets_rooms{${lbl}} ${roomCount}`);
 
-  let allRooms = 0, allClients = 0, publicRooms = 0, publicClients = 0;
+  lines.push(`# HELP party_sockets_origins_tracked Distinct origins seen since boot`);
+  lines.push(`# TYPE party_sockets_origins_tracked gauge`);
+  lines.push(`party_sockets_origins_tracked{${lbl}} ${originCounters.size}`);
+
+  lines.push(`# HELP party_sockets_clients_by_origin Live clients labeled by origin`);
+  lines.push(`# TYPE party_sockets_clients_by_origin gauge`);
+  lines.push(`# HELP party_sockets_rooms_by_origin Live rooms labeled by origin`);
+  lines.push(`# TYPE party_sockets_rooms_by_origin gauge`);
   for (const [name, s] of origins) {
-    allRooms += s.rooms;
-    allClients += s.clients;
-    if (!isLocalOriginName(name)) {
-      publicRooms += s.rooms;
-      publicClients += s.clients;
-    }
-  }
-  const machineCount = peers.length + 1;
-
-  // Origin rows: this machine only. Filled dot when live, hollow when idle.
-  const originRows = Array.from(allOriginNames)
-    .map((name) => {
-      const live = origins.get(name) ?? { rooms: 0, clients: 0 };
-      const totals = originCounters.get(name) ?? { connections: 0, rooms: 0 };
-      return { name, live, totals };
-    })
-    .sort((a, b) => b.live.clients - a.live.clients || b.totals.connections - a.totals.connections)
-    .map(({ name, live, totals }) => {
-      // name comes from the WebSocket Origin header — user-controlled.
-      const display = escapeHtml(name.replace(/^https?:\/\//, ""));
-      const local = isLocalOriginName(name);
-      const isLive = live.clients > 0 || live.rooms > 0;
-      const mark = isLive ? "●" : "○";
-      const liveText = `${fmt(live.clients)}c · ${fmt(live.rooms)}r`;
-      const totalsText = totals.connections === 0 && totals.rooms === 0
-        ? "no traffic yet"
-        : `${fmt(totals.connections)} conn · ${fmt(totals.rooms)} room${totals.rooms !== 1 ? "s" : ""} since boot`;
-      return `<div class="row origin${isLive ? "" : " idle"}"${local ? " data-local" : ""}>
-  <span class="mark">${mark}</span>
-  <span class="o-name">${display}</span>
-  <span class="o-live">${liveText}</span>
-  <span class="o-totals">${totalsText}</span>
-</div>`;
-    })
-    .join("");
-
-  // Machine rows: current first, peers below as links. Peer counts arrive
-  // client-side via loadPeerStats(); render placeholders here.
-  const shortenId = (id: string) => (id.length > 10 ? id.slice(0, 6) : id);
-  const selfId = INSTANCE_ID ? shortenId(INSTANCE_ID) : "local";
-  const selfMetaRow = [REGION, formatUptime(uptimeMs)].filter(Boolean).join(" · ");
-  const selfMetaSplash = [formatUptime(uptimeMs), REGION, ipFamily?.toLowerCase()].filter(Boolean).join(" · ");
-  let selfRoomCount = 0, selfClientCount = 0;
-  for (const s of origins.values()) { selfRoomCount += s.rooms; selfClientCount += s.clients; }
-  const selfRow = `<div class="row machine current">
-  <span class="mark">●</span>
-  <span class="m-id">${selfId}</span>
-  <span class="m-counts">${fmt(selfClientCount)}c · ${fmt(selfRoomCount)}r</span>
-  <span class="m-meta">${selfMetaRow}</span>
-</div>`;
-  function peerLinks(p: Peer): { link: string; statsUrl: string; idShort: string } {
-    if (p.id.startsWith("http")) {
-      // Local PEERS env mode — id is the base URL.
-      const base = p.id.replace(/\/$/, "");
-      return {
-        link: base,
-        statsUrl: `${base}/stats`,
-        idShort: base.replace(/^https?:\/\//, ""),
-      };
-    }
-    return {
-      link: `?instance=${encodeURIComponent(p.id)}`,
-      statsUrl: `/stats?instance=${encodeURIComponent(p.id)}`,
-      idShort: shortenId(p.id),
-    };
-  }
-  // Defense-in-depth: id/region come from DNS or the PEERS env. Both should be
-  // operator-controlled, but escape anyway so a stray quote can't break out.
-  const peerRows = peers
-    .map((p) => {
-      const { link, statsUrl, idShort } = peerLinks(p);
-      const meta = p.region || "";
-      return `<a class="row machine peer" href="${escapeHtml(link)}" data-stats-url="${escapeHtml(statsUrl)}">
-  <span class="mark">●</span>
-  <span class="m-id">${escapeHtml(idShort)}</span>
-  <span class="m-counts">…</span>
-  <span class="m-meta">${escapeHtml(meta)}</span>
-</a>`;
-    })
-    .join("");
-
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,${encodeURIComponent(FAVICON_SVG)}">
-<title>Party-Sockets</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;600&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg: #050b14;
-    --panel: #0c1622;
-    --cyan: #7dd3fc;
-    --green: #4ade80;
-    --fg: #e2e8f0;
-    --muted: #64748b;
-    --dim: #334155;
-    --faint: #1e293b;
-  }
-  * { margin: 0; box-sizing: border-box; }
-  html { -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
-  body {
-    font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, monospace;
-    background: var(--bg);
-    color: var(--fg);
-    font-size: 12px;
-    line-height: 1.5;
-    font-weight: 400;
-    font-feature-settings: 'tnum' 1;
-    display: flex;
-    justify-content: center;
-    min-height: 100vh;
-    padding: 1.5rem 1rem 2rem;
-  }
-  main { width: 100%; max-width: 720px; animation: fade 0.25s ease-out; }
-  @keyframes fade { from { opacity: 0; } to { opacity: 1; } }
-
-  /* ── splash ── */
-  .splash {
-    background: var(--panel);
-    border: 1px solid var(--cyan);
-    padding: 0.7rem 0.85rem;
-    margin-bottom: 0.6rem;
-  }
-  .splash .row1 {
-    display: flex; justify-content: space-between; align-items: baseline;
-    color: var(--cyan); font-weight: 700;
-    margin-bottom: 0.15rem;
-  }
-  .splash h1 {
-    font-size: 14px; letter-spacing: 0.06em; text-transform: uppercase;
-    font-weight: 700;
-  }
-  .splash .ver { color: var(--cyan); font-weight: 400; font-size: 11px; }
-  .splash .row2 {
-    display: flex; justify-content: space-between; flex-wrap: wrap; gap: 0 0.6rem;
-    color: var(--muted); font-size: 11px;
-  }
-  .splash .row2 .ok { color: var(--green); }
-  .splash .row2 .self { color: var(--fg); }
-  .splash .stats {
-    display: flex; gap: 1.4rem; margin-top: 0.5rem;
-    padding-top: 0.5rem;
-    border-top: 1px dashed var(--dim);
-    font-size: 11px; flex-wrap: wrap;
-  }
-  .splash .stat { display: flex; gap: 0.4rem; }
-  .splash .stat .k { color: var(--muted); }
-  .splash .stat .num { color: var(--green); font-weight: 700; font-variant-numeric: tabular-nums; }
-
-  /* ── two panes ── */
-  .panes {
-    display: grid; grid-template-columns: 1fr 1fr;
-    gap: 0.5rem;
-    margin-bottom: 0.6rem;
-  }
-  @media (max-width: 600px) {
-    .panes { grid-template-columns: 1fr; }
-  }
-  .panel {
-    border: 1px solid var(--cyan);
-    background: var(--panel);
-    display: flex; flex-direction: column;
-    margin: 0;
-  }
-  .titlebar {
-    background: var(--cyan); color: var(--bg);
-    padding: 0.3rem 0.6rem;
-    font-size: 10px; font-weight: 700;
-    letter-spacing: 0.06em; text-transform: uppercase;
-    display: flex; justify-content: space-between; align-items: center;
-    gap: 0.5rem;
-  }
-  .titlebar .meta { font-weight: 400; opacity: 0.75; }
-  .panel-c { padding: 0.5rem 0.6rem; flex: 1; }
-
-  /* ── rows (machines + origins) ── */
-  .row {
-    display: grid; column-gap: 0.5rem;
-    padding: 0.35rem 0;
-    align-items: baseline;
-    text-decoration: none; color: inherit;
-  }
-  .row + .row { border-top: 1px dotted var(--dim); }
-  .mark { color: var(--green); font-size: 13px; line-height: 1; }
-  .row.idle .mark { color: var(--dim); }
-
-  .row.machine {
-    grid-template-columns: 1ch 1fr auto;
-    row-gap: 0.05rem;
-  }
-  .m-id { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .m-meta { color: var(--muted); font-size: 10px; grid-column: 2 / span 2; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .m-counts { color: var(--green); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .row.machine.peer .m-counts { color: var(--cyan); }
-  a.row.machine { transition: background 0.12s; cursor: pointer; }
-  a.row.machine:hover { background: rgba(125, 211, 252, 0.05); }
-
-  .row.origin {
-    grid-template-columns: 1ch 1fr auto;
-    row-gap: 0.05rem;
-  }
-  .o-name { color: var(--fg); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
-  .o-live { color: var(--green); white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .row.idle .o-live { color: var(--dim); }
-  .o-totals { grid-column: 2 / span 2; color: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-
-  .o-empty { color: var(--dim); font-size: 11px; padding: 0.4rem 0.2rem; }
-
-  /* ── localhost toggle (in titlebar) ── */
-  .lt {
-    display: inline-flex; align-items: center; gap: 0.3rem;
-    cursor: pointer; user-select: none;
-    color: var(--bg); font-weight: 700;
-    letter-spacing: 0.06em; font-size: 10px;
-  }
-  .lt input { display: none; }
-  .lt-box {
-    width: 9px; height: 9px;
-    border: 1px solid var(--bg); position: relative; flex-shrink: 0;
-  }
-  .lt input:checked + .lt-box::after {
-    content: '';
-    position: absolute; inset: 1px;
-    background: var(--bg);
-  }
-  html.hide-local [data-local] { display: none; }
-  .row.machine.unreachable .mark { color: var(--dim); }
-  .row.machine.unreachable .m-counts { color: var(--dim); }
-  .row.machine.unreachable .m-meta::after { content: ' · unreachable'; color: var(--dim); }
-  .paused-tag { display: none; color: var(--muted); }
-  html.paused .paused-tag { display: inline; }
-
-  /* ── latency test ── */
-  .test {
-    background: var(--panel);
-    border: 1px solid var(--cyan);
-    color: var(--fg);
-    padding: 0.5rem 0.75rem;
-    font-family: inherit;
-    font-size: 11px;
-    cursor: pointer;
-    width: 100%;
-    text-align: left;
-    font-weight: 500;
-    transition: background 0.12s;
-    position: relative;
-    margin-bottom: 0.6rem;
-    text-transform: lowercase;
-    letter-spacing: 0.04em;
-  }
-  .test:hover { background: rgba(125, 211, 252, 0.05); }
-  .test:disabled { opacity: 0.6; cursor: default; }
-  .test::after { content: '→'; position: absolute; right: 0.75rem; top: 50%; transform: translateY(-50%); color: var(--cyan); }
-  .test:disabled::after { display: none; }
-
-  #test-chart { width: 100%; height: 100px; display: none; border: 1px solid var(--dim); margin-bottom: 0.5rem; }
-  #test-stats { display: none; grid-template-columns: 1fr 1fr 1fr 1fr; gap: 0.4rem; margin-bottom: 0.6rem; font-size: 10px; text-align: center; }
-  .ts { border: 1px solid var(--dim); padding: 0.4rem; background: var(--panel); }
-  .ts-val { color: var(--fg); font-weight: 600; font-variant-numeric: tabular-nums; }
-  .ts-label { color: var(--muted); font-size: 9px; margin-top: 0.1rem; text-transform: uppercase; letter-spacing: 0.05em; }
-
-  /* ── function-key footer ── */
-  .foot {
-    background: var(--cyan); color: var(--bg);
-    padding: 0.3rem 0.7rem;
-    display: flex; justify-content: space-between; align-items: center;
-    font-size: 10px; text-transform: uppercase;
-    letter-spacing: 0.05em; font-weight: 700;
-    flex-wrap: wrap; gap: 0.3rem 1rem;
-  }
-  .foot .keys { display: flex; gap: 1rem; flex-wrap: wrap; }
-  .foot .key {
-    color: var(--bg); text-decoration: none;
-    cursor: pointer;
-  }
-  .foot .key sup {
-    color: rgba(5,11,20,0.55);
-    margin-right: 0.2rem;
-    font-size: 0.8em;
-  }
-  .foot a.key:hover, .foot .key:hover { text-decoration: underline; }
-
-  @media (max-width: 360px) {
-    .splash .stats { gap: 0.9rem; }
-    #test-stats { grid-template-columns: 1fr 1fr; }
-  }
-</style>
-<script>if(localStorage.getItem('show-local')!=='1')document.documentElement.classList.add('hide-local');</script>
-</head>
-<body>
-<main>
-  <section class="splash" data-refresh="splash">
-    <div class="row1">
-      <h1>party-sockets</h1>
-      <span class="ver">v${VERSION}</span>
-    </div>
-    <div class="row2">
-      <span><span class="ok">● online</span>${selfMetaSplash ? ' · ' + selfMetaSplash : ''}<span class="paused-tag"> · paused</span></span>
-      <span class="self">${selfId}</span>
-    </div>
-    <div class="stats">
-      <span class="stat"><span class="k">clients</span><span class="num sn" data-stat-key="clients" data-all="${allClients}" data-public="${publicClients}">${publicClients}</span></span>
-      <span class="stat"><span class="k">rooms</span><span class="num sn" data-stat-key="rooms" data-all="${allRooms}" data-public="${publicRooms}">${publicRooms}</span></span>
-      <span class="stat"><span class="k">machines</span><span class="num">${machineCount}</span></span>
-    </div>
-  </section>
-
-  <div class="panes">
-    <section class="panel" data-refresh="machines">
-      <div class="titlebar"><span>≡  machines</span><span class="meta">${machineCount}</span></div>
-      <div class="panel-c">
-        ${selfRow}${peerRows}
-      </div>
-    </section>
-    <section class="panel" data-refresh="origins">
-      <div class="titlebar">
-        <span>≡  origins</span>
-        ${hasLocal
-          ? '<label class="lt"><input type="checkbox" id="show-local"><span class="lt-box"></span><span>local</span></label>'
-          : `<span class="meta">${allOriginNames.size}</span>`}
-      </div>
-      <div class="panel-c">
-        ${allOriginNames.size > 0 ? originRows : '<div class="o-empty">no traffic yet</div>'}
-      </div>
-    </section>
-  </div>
-
-  <button class="test" id="test-btn">test latency</button>
-  <canvas id="test-chart"></canvas>
-  <div id="test-stats"></div>
-
-  <div class="foot">
-    <div class="keys">
-      <a class="key" href="https://github.com/tim4724/Party-Sockets"><sup>F1</sup>github</a>
-      <span class="key" data-key="refresh"><sup>F2</sup>refresh</span>
-      <span class="key" data-key="test"><sup>F3</sup>test</span>
-    </div>
-    <span>v${VERSION}</span>
-  </div>
-</main>
-<script>
-function runTest() {
-  const btn = document.getElementById('test-btn');
-  const canvas = document.getElementById('test-chart');
-  const statsEl = document.getElementById('test-stats');
-  const ctx = canvas.getContext('2d');
-
-  btn.disabled = true;
-  btn.textContent = 'connecting…';
-  canvas.style.display = 'block';
-  statsEl.style.display = 'grid';
-  statsEl.innerHTML = ['min','avg','p95','jitter'].map(l => '<div class="ts"><div class="ts-val" style="color:#555">—</div><div class="ts-label">' + l + '</div></div>').join('');
-
-  const dpr = window.devicePixelRatio || 1;
-  const rect = canvas.getBoundingClientRect();
-  canvas.width = rect.width * dpr;
-  canvas.height = rect.height * dpr;
-  ctx.scale(dpr, dpr);
-  const W = rect.width, H = rect.height;
-
-  const samples = [];
-  const DURATION = 15000;
-  const INTERVAL = 200;
-  let pending = null;
-  let startTime = null;
-
-  function getColor(avg) {
-    if (avg < 50) return '#4ade80';
-    if (avg < 150) return '#facc15';
-    return '#f87171';
+    lines.push(`party_sockets_clients_by_origin{${lbl},origin="${promLabel(name)}"} ${s.clients}`);
+    lines.push(`party_sockets_rooms_by_origin{${lbl},origin="${promLabel(name)}"} ${s.rooms}`);
   }
 
-
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const ws = new WebSocket(proto + '//' + location.host);
-  const clientId = 'test-' + Math.random().toString(36).slice(2, 8);
-
-  function drawChart() {
-    ctx.clearRect(0, 0, W, H);
-    if (samples.length < 2) return;
-
-    const maxMs = Math.max(...samples.map(s => s.rtt), 10);
-    const yScale = (H - 20) / maxMs;
-    const xScale = W / DURATION;
-
-    // Grid lines
-    ctx.strokeStyle = '#2a2a2a';
-    ctx.lineWidth = 0.5;
-    const gridLines = [0.25, 0.5, 0.75];
-    for (const g of gridLines) {
-      const gy = H - 10 - (maxMs * g * yScale);
-      ctx.beginPath(); ctx.moveTo(0, gy); ctx.lineTo(W, gy); ctx.stroke();
-    }
-
-    // Y-axis labels
-    ctx.fillStyle = '#555';
-    ctx.font = '9px -apple-system, system-ui, sans-serif';
-    ctx.textAlign = 'right';
-    ctx.fillText(Math.round(maxMs) + 'ms', W - 2, 12);
-    ctx.fillText('0', W - 2, H - 2);
-
-    // Line with color changing at threshold crossings
-    ctx.lineWidth = 1.5;
-    ctx.lineCap = 'round';
-    const thresholds = [50, 150];
-    for (let i = 1; i < samples.length; i++) {
-      const x0 = samples[i-1].t * xScale, y0 = H - 10 - (samples[i-1].rtt * yScale);
-      const x1 = samples[i].t * xScale, y1 = H - 10 - (samples[i].rtt * yScale);
-      const rtt0 = samples[i-1].rtt, rtt1 = samples[i].rtt;
-      // Find threshold crossings and sort by position
-      const splits = [0];
-      for (const th of thresholds) {
-        if ((rtt0 < th && rtt1 >= th) || (rtt0 >= th && rtt1 < th)) {
-          splits.push((th - rtt0) / (rtt1 - rtt0));
-        }
-      }
-      splits.push(1);
-      splits.sort((a, b) => a - b);
-      for (let j = 1; j < splits.length; j++) {
-        const t0 = splits[j-1], t1 = splits[j];
-        const sx0 = x0 + (x1 - x0) * t0, sy0 = y0 + (y1 - y0) * t0;
-        const sx1 = x0 + (x1 - x0) * t1, sy1 = y0 + (y1 - y0) * t1;
-        const midRtt = rtt0 + (rtt1 - rtt0) * ((t0 + t1) / 2);
-        ctx.strokeStyle = getColor(midRtt);
-        ctx.beginPath(); ctx.moveTo(sx0, sy0); ctx.lineTo(sx1, sy1); ctx.stroke();
-      }
-    }
-
-    // Dots colored individually
-    for (const s of samples) {
-      const x = s.t * xScale;
-      const y = H - 10 - (s.rtt * yScale);
-      ctx.fillStyle = getColor(s.rtt);
-      ctx.beginPath(); ctx.arc(x, y, 2, 0, Math.PI * 2); ctx.fill();
-    }
+  lines.push(`# HELP party_sockets_connections_total WebSocket connections opened since boot`);
+  lines.push(`# TYPE party_sockets_connections_total counter`);
+  lines.push(`# HELP party_sockets_rooms_created_total Rooms created since boot`);
+  lines.push(`# TYPE party_sockets_rooms_created_total counter`);
+  for (const [name, c] of originCounters) {
+    lines.push(`party_sockets_connections_total{${lbl},origin="${promLabel(name)}"} ${c.connections}`);
+    lines.push(`party_sockets_rooms_created_total{${lbl},origin="${promLabel(name)}"} ${c.rooms}`);
   }
 
-  function showStats() {
-    const rtts = samples.map(s => s.rtt);
-    const min = Math.min(...rtts);
-    const avg = rtts.reduce((a, b) => a + b, 0) / rtts.length;
-    const sorted = [...rtts].sort((a, b) => a - b);
-    const p95 = sorted[Math.floor(sorted.length * 0.95)];
-    const jitter = rtts.reduce((sum, r) => sum + Math.abs(r - avg), 0) / rtts.length;
+  lines.push(`# HELP process_resident_memory_bytes Resident memory size of the bun process`);
+  lines.push(`# TYPE process_resident_memory_bytes gauge`);
+  lines.push(`process_resident_memory_bytes{${lbl}} ${mem.rss}`);
+  lines.push(`# HELP process_heap_used_bytes Used JS heap size`);
+  lines.push(`# TYPE process_heap_used_bytes gauge`);
+  lines.push(`process_heap_used_bytes{${lbl}} ${mem.heapUsed}`);
+  lines.push(`# HELP process_uptime_seconds Process uptime`);
+  lines.push(`# TYPE process_uptime_seconds gauge`);
+  lines.push(`process_uptime_seconds{${lbl}} ${uptimeS.toFixed(2)}`);
 
-    statsEl.style.display = 'grid';
-    statsEl.innerHTML = [
-      ['min', min, min.toFixed(1) + 'ms'],
-      ['avg', avg, avg.toFixed(1) + 'ms'],
-      ['p95', p95, p95.toFixed(1) + 'ms'],
-      ['jitter', jitter, jitter.toFixed(1) + 'ms'],
-    ].map(([l, n, v]) => '<div class="ts"><div class="ts-val" style="color:' + getColor(n) + '">' + v + '</div><div class="ts-label">' + l + '</div></div>').join('');
-  }
-
-  function finish() {
-    ws.close();
-    btn.disabled = false;
-    btn.textContent = 'test again';
-    testActive = false;
-  }
-
-  ws.onopen = () => {
-    ws.send(JSON.stringify({ type: 'create', clientId, maxClients: 1 }));
-  };
-
-  ws.onmessage = (e) => {
-    const msg = JSON.parse(e.data);
-    if (msg.type === 'created') {
-      startTime = performance.now();
-      const iv = setInterval(() => {
-        const elapsed = performance.now() - startTime;
-        if (elapsed >= DURATION) { clearInterval(iv); finish(); return; }
-        const remaining = Math.ceil((DURATION - elapsed) / 1000);
-        btn.textContent = 'testing… ' + remaining + 's';
-        if (pending === null) {
-          pending = performance.now();
-          ws.send(JSON.stringify({ type: 'send', to: clientId, data: 'ping' }));
-        }
-      }, INTERVAL);
-    } else if (msg.type === 'message' && pending !== null) {
-      const rtt = performance.now() - pending;
-      const t = performance.now() - startTime;
-      pending = null;
-      samples.push({ t, rtt });
-      drawChart();
-      showStats();
-    } else if (msg.type === 'error') {
-      btn.textContent = 'error: ' + msg.message;
-      btn.disabled = false;
-    }
-  };
-
-  ws.onerror = () => { btn.textContent = 'connection failed'; btn.disabled = false; };
+  return lines.join("\n") + "\n";
 }
-var testActive = false;
-document.getElementById('test-btn').addEventListener('click', function() { testActive = true; runTest(); });
-
-// Function-key shortcuts. Click handlers for the foot bar items, plus actual
-// F1/F2/F3 keypress bindings (we preventDefault to override browser defaults
-// like Help / Find).
-function runKey(k) {
-  if (k === 'github') window.open('https://github.com/tim4724/Party-Sockets', '_blank');
-  else if (k === 'refresh') { refresh(); startPolling(); }
-  else if (k === 'test') document.getElementById('test-btn').click();
-}
-document.addEventListener('click', function(e) {
-  var el = e.target.closest('[data-key]');
-  if (el) runKey(el.dataset.key);
-});
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'F1') { e.preventDefault(); runKey('github'); }
-  else if (e.key === 'F2') { e.preventDefault(); runKey('refresh'); }
-  else if (e.key === 'F3') { e.preventDefault(); runKey('test'); }
-});
-
-var root = document.documentElement;
-function showLocalChecked() { return localStorage.getItem('show-local') === '1'; }
-function updateCounts() {
-  var showAll = showLocalChecked();
-  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
-    el.textContent = showAll ? el.getAttribute('data-all') : el.getAttribute('data-public');
-  });
-}
-function syncToggle() {
-  var t = document.getElementById('show-local');
-  if (t) t.checked = showLocalChecked();
-}
-document.addEventListener('change', function(e) {
-  if (e.target && e.target.id === 'show-local') {
-    var on = e.target.checked;
-    root.classList.toggle('hide-local', !on);
-    localStorage.setItem('show-local', on ? '1' : '0');
-    updateCounts();
-  }
-});
-syncToggle();
-updateCounts();
-
-// After the splash section is swapped in by refresh(), the freshly-rendered
-// data-all/data-public values are the canonical "self" baseline. Stamp them
-// onto data-self-* so loadPeerStats() can re-augment from a known origin.
-function stampSelfBaseline() {
-  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
-    el.dataset.selfAll = el.dataset.all;
-    el.dataset.selfPublic = el.dataset.public;
-  });
-}
-
-async function refresh() {
-  if (testActive) return;
-  try {
-    var r = await fetch(location.href, { cache: 'no-store' });
-    if (!r.ok) return;
-    var html = await r.text();
-    var doc = new DOMParser().parseFromString(html, 'text/html');
-    document.querySelectorAll('section[data-refresh]').forEach(function(sec) {
-      var fresh = doc.querySelector('section[data-refresh="' + sec.dataset.refresh + '"]');
-      if (fresh) sec.innerHTML = fresh.innerHTML;
-    });
-    stampSelfBaseline();
-    syncToggle();
-    updateCounts();
-    loadPeerStats();
-  } catch (e) {}
-}
-
-// Fetch /stats from each peer over the public edge (Fly fly-replays via
-// ?instance=<id>; local PEERS-mode hits the URL directly). Updates each
-// peer row's counts/meta and augments the splash cluster totals. Failed
-// fetches mark the row "unreachable". A generation counter guards against
-// stale writes when a refresh fires while a previous fetch is in-flight.
-var loadPeerStatsGen = 0;
-async function loadPeerStats() {
-  var gen = ++loadPeerStatsGen;
-  var rows = document.querySelectorAll('a.row.machine.peer[data-stats-url]');
-  if (!rows.length) return;
-  var peerSums = { clients: 0, rooms: 0, publicClients: 0, publicRooms: 0 };
-  await Promise.all(Array.prototype.map.call(rows, async function(row) {
-    var url = row.dataset.statsUrl;
-    try {
-      var ctl = new AbortController();
-      var t = setTimeout(function() { ctl.abort(); }, 5000);
-      var r = await fetch(url, { signal: ctl.signal, cache: 'no-store' });
-      clearTimeout(t);
-      if (!r.ok) { row.classList.add('unreachable'); return; }
-      var d = await r.json();
-      if (typeof d.clients !== 'number' || typeof d.rooms !== 'number') {
-        row.classList.add('unreachable'); return;
-      }
-      // A newer call has started — don't write stale per-row updates either.
-      if (gen !== loadPeerStatsGen) return;
-      var counts = row.querySelector('.m-counts');
-      if (counts) counts.textContent = d.clients + 'c · ' + d.rooms + 'r';
-      var meta = row.querySelector('.m-meta');
-      if (meta) {
-        var parts = [];
-        if (d.region) parts.push(d.region);
-        if (typeof d.uptimeMs === 'number') {
-          var s = Math.floor(d.uptimeMs / 1000);
-          var days = Math.floor(s / 86400), h = Math.floor((s % 86400) / 3600), m = Math.floor((s % 3600) / 60);
-          parts.push((days ? days + 'd ' : '') + (h ? h + 'h ' : '') + m + 'm');
-        }
-        meta.textContent = parts.join(' · ');
-      }
-      row.classList.remove('unreachable');
-      peerSums.clients += d.clients;
-      peerSums.rooms += d.rooms;
-      peerSums.publicClients += (typeof d.publicClients === 'number' ? d.publicClients : d.clients);
-      peerSums.publicRooms += (typeof d.publicRooms === 'number' ? d.publicRooms : d.rooms);
-    } catch (e) {
-      row.classList.add('unreachable');
-    }
-  }));
-  if (gen !== loadPeerStatsGen) return;
-  // Augment splash totals from a stable self baseline.
-  document.querySelectorAll('.sn[data-all]').forEach(function(el) {
-    var k = el.dataset.statKey;
-    if (k !== 'clients' && k !== 'rooms') return;
-    var selfAll = parseInt(el.dataset.selfAll != null ? el.dataset.selfAll : el.dataset.all, 10) || 0;
-    var selfPub = parseInt(el.dataset.selfPublic != null ? el.dataset.selfPublic : el.dataset.public, 10) || 0;
-    el.dataset.selfAll = String(selfAll);
-    el.dataset.selfPublic = String(selfPub);
-    var addAll = (k === 'clients') ? peerSums.clients : peerSums.rooms;
-    var addPub = (k === 'clients') ? peerSums.publicClients : peerSums.publicRooms;
-    el.dataset.all = String(selfAll + addAll);
-    el.dataset.public = String(selfPub + addPub);
-  });
-  updateCounts();
-}
-// Auto-refresh every 30s while the tab is visible, capped at 2 minutes from
-// the last activation — idle tabs shouldn't fan out peer /stats forever.
-// Tab focus and F2/the refresh key both reset the 2-minute window.
-var refreshTimer = null;
-var refreshStop = null;
-function stopPolling() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  if (refreshStop) clearTimeout(refreshStop);
-  refreshTimer = null; refreshStop = null;
-  root.classList.add('paused');
-}
-function startPolling() {
-  if (refreshTimer) clearInterval(refreshTimer);
-  if (refreshStop) clearTimeout(refreshStop);
-  refreshTimer = setInterval(refresh, 30000);
-  refreshStop = setTimeout(stopPolling, 120000);
-  root.classList.remove('paused');
-}
-document.addEventListener('visibilitychange', function() {
-  if (document.hidden) stopPolling();
-  else { refresh(); startPolling(); }
-});
-if (!document.hidden) startPolling();
-stampSelfBaseline();
-loadPeerStats();
-</script>
-</body>
-</html>`;
-}
-
 // --- Server ---
 
 const server = Bun.serve({
@@ -1162,32 +507,9 @@ const server = Bun.serve({
         },
       });
     }
-    if (url.pathname === "/stats") {
-      const { roomCount, clientCount, origins } = getOriginStats();
-      let publicRooms = 0, publicClients = 0;
-      for (const [name, s] of origins) {
-        if (!isLocalOriginName(name)) { publicRooms += s.rooms; publicClients += s.clients; }
-      }
-      const payload: PeerStats = {
-        instance: INSTANCE_ID,
-        region: REGION,
-        uptimeMs: Date.now() - serverStartedAt,
-        rooms: roomCount,
-        clients: clientCount,
-        publicRooms,
-        publicClients,
-        origins: buildOriginAggForSelf(origins),
-      };
-      return new Response(JSON.stringify(payload), {
-        headers: {
-          "Content-Type": "application/json",
-          "Access-Control-Allow-Origin": "*",
-        },
-      });
-    }
-    if (url.pathname === "/favicon.ico" || url.pathname === "/favicon.svg") {
-      return new Response(FAVICON_SVG, {
-        headers: { "Content-Type": "image/svg+xml" },
+    if (url.pathname === "/metrics") {
+      return new Response(metricsText(), {
+        headers: { "Content-Type": "text/plain; version=0.0.4" },
       });
     }
     const roomMatch = url.pathname.match(/^\/room\/([^/]+)$/);
@@ -1210,12 +532,13 @@ const server = Bun.serve({
     const origin = req.headers.get("origin") || undefined;
     const upgraded = server.upgrade(req, { data: { origin } as ClientData });
     if (!upgraded) {
-      const { origins } = getOriginStats();
-      const forwarded = req.headers.get("x-forwarded-for")?.split(",")[0].trim();
-      const ipFamily = forwarded?.includes(":") && !forwarded.startsWith("::ffff:") ? "IPv6" : "IPv4";
-      const peers = await getPeers();
-      return new Response(statusPage(origins, peers, ipFamily), {
-        headers: { "Content-Type": "text/html" },
+      // Anything that isn't an API endpoint or a WS upgrade is treated as a
+      // browser hitting the root for human-friendly observability — redirect
+      // to the Fly Grafana dashboard. DASHBOARD_URL overrides for non-Fly
+      // hosting or a different dashboard.
+      return new Response(null, {
+        status: 302,
+        headers: { Location: DASHBOARD_URL },
       });
     }
   },
