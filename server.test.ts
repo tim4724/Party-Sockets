@@ -675,6 +675,21 @@ describe("peer probe", () => {
     expect(html).toMatch(/class="row machine peer"[\s\S]*?<span class="m-counts">…<\/span>/);
   });
 
+  test("origin names are HTML-escaped (Origin header is user-controlled)", async () => {
+    // Inject a room with a hostile origin and confirm the rendered status
+    // page escapes it instead of letting it break out into HTML.
+    rooms.set("XSSXSS", {
+      maxClients: 1,
+      origin: "https://evil\"><script>alert(1)</script>",
+      clients: new Map(),
+    });
+    const res = await origFetch(`http://localhost:${server.port}/`);
+    const html = await res.text();
+    rooms.delete("XSSXSS");
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
+
   test("findRoomOnPeers filters to the requested region", async () => {
     // abc123=fra has the room, def456=iad has it too. With region="fra" we
     // should only probe abc123. To prove def456 isn't probed, we make def456

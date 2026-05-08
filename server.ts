@@ -441,7 +441,8 @@ function statusPage(origins: Map<string, OriginStats>, peers: Peer[], ipFamily?:
     })
     .sort((a, b) => b.live.clients - a.live.clients || b.totals.connections - a.totals.connections)
     .map(({ name, live, totals }) => {
-      const display = name.replace(/^https?:\/\//, "");
+      // name comes from the WebSocket Origin header — user-controlled.
+      const display = escapeHtml(name.replace(/^https?:\/\//, ""));
       const local = isLocalOriginName(name);
       const isLive = live.clients > 0 || live.rooms > 0;
       const mark = isLive ? "●" : "○";
