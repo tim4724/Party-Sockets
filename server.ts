@@ -465,7 +465,7 @@ function metricsText(): string {
   const mem = process.memoryUsage();
   const uptimeS = (Date.now() - serverStartedAt) / 1000;
   const inst = promLabel(INSTANCE_ID || "local");
-  const region = promLabel(REGION || "local");
+  const region = promLabel((REGION || "local").toUpperCase());
   const ver = promLabel(VERSION);
   const lbl = `instance="${inst}",region="${region}",version="${ver}"`;
   const lines: string[] = [];

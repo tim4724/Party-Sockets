@@ -8,9 +8,9 @@
     {
       "id": 1,
       "type": "stat",
-      "title": "Clients (cluster)",
+      "title": "Live rooms (cluster)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -22,14 +22,14 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
           "unit": "short"
         }
       },
       "targets": [
         {
-          "expr": "sum(party_sockets_clients)",
-          "legendFormat": "clients",
+          "expr": "sum(party_sockets_rooms{region=~\"$region\"})",
+          "legendFormat": "rooms",
           "refId": "A"
         }
       ]
@@ -37,9 +37,9 @@
     {
       "id": 2,
       "type": "stat",
-      "title": "Rooms (cluster)",
+      "title": "Live clients (cluster)",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 6, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
       "options": {
         "colorMode": "value",
         "graphMode": "area",
@@ -57,8 +57,8 @@
       },
       "targets": [
         {
-          "expr": "sum(party_sockets_rooms)",
-          "legendFormat": "rooms",
+          "expr": "sum(party_sockets_clients{region=~\"$region\"})",
+          "legendFormat": "clients",
           "refId": "A"
         }
       ]
@@ -66,9 +66,101 @@
     {
       "id": 3,
       "type": "stat",
-      "title": "Machines reporting",
+      "title": "Avg clients / room",
+      "description": "Cluster-wide social density. 1.0 = empty rooms (peers waiting). Healthy values depend on your traffic shape.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 0, "w": 6, "h": 4 },
+      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "short",
+          "decimals": 2
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(party_sockets_clients{region=~\"$region\"}) / clamp_min(sum(party_sockets_rooms{region=~\"$region\"}), 1)",
+          "legendFormat": "clients/room",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "stat",
+      "title": "Rooms created / min",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
+          "unit": "cpm",
+          "decimals": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])) * 60",
+          "legendFormat": "rooms/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "stat",
+      "title": "Connections / min",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "textMode": "auto"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
+          "unit": "cpm",
+          "decimals": 1
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum(rate(party_sockets_connections_total{region=~\"$region\"}[5m])) * 60",
+          "legendFormat": "conn/min",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 6,
+      "type": "stat",
+      "title": "Machines reporting",
+      "description": "Threshold tuned for 14-machine fleet. Adjust steps if you scale.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
       "options": {
         "colorMode": "value",
         "graphMode": "none",
@@ -80,7 +172,14 @@
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 13 },
+              { "color": "green", "value": 14 }
+            ]
+          },
           "unit": "short"
         }
       },
@@ -92,47 +191,12 @@
         }
       ]
     },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Origins tracked (cluster)",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 18, "y": 0, "w": 6, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "yellow", "value": 90 },
-              { "color": "red", "value": 100 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "max(party_sockets_origins_tracked)",
-          "legendFormat": "max",
-          "refId": "A"
-        }
-      ]
-    },
+
     {
       "id": 10,
       "type": "timeseries",
-      "title": "Resident memory per machine",
-      "description": "If RSS climbs past ~200 MiB on the 256 MB VM, OOMs are imminent. Threshold at 200 MiB.",
+      "title": "Live rooms per machine",
+      "description": "Stacked. Watch for hotspots — Fly's soft_limit should fan out before any single machine saturates.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
       "fieldConfig": {
@@ -140,30 +204,22 @@
           "color": { "mode": "palette-classic" },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "linear",
+            "lineInterpolation": "stepAfter",
             "lineWidth": 1,
-            "fillOpacity": 10,
+            "fillOpacity": 30,
             "showPoints": "never",
-            "thresholdsStyle": { "mode": "line" }
+            "stacking": { "mode": "normal", "group": "A" }
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 209715200 },
-              { "color": "red", "value": 251658240 }
-            ]
-          },
-          "unit": "bytes"
+          "unit": "short"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "process_resident_memory_bytes",
+          "expr": "party_sockets_rooms{region=~\"$region\"}",
           "legendFormat": "{{region}} · {{instance}}",
           "refId": "A"
         }
@@ -172,7 +228,7 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "JS heap used per machine",
+      "title": "Live clients per machine",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
       "fieldConfig": {
@@ -180,30 +236,33 @@
           "color": { "mode": "palette-classic" },
           "custom": {
             "drawStyle": "line",
-            "lineInterpolation": "linear",
+            "lineInterpolation": "stepAfter",
             "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
           },
-          "unit": "bytes"
+          "unit": "short"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "process_heap_used_bytes",
+          "expr": "party_sockets_clients{region=~\"$region\"}",
           "legendFormat": "{{region}} · {{instance}}",
           "refId": "A"
         }
       ]
     },
+
     {
       "id": 20,
       "type": "timeseries",
-      "title": "Live clients per machine",
+      "title": "Live rooms by origin",
+      "description": "Per-origin live room count (cluster-wide). Origins beyond MAX_ORIGIN_SERIES are bucketed as `__other__`.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
       "fieldConfig": {
@@ -213,20 +272,21 @@
             "drawStyle": "line",
             "lineInterpolation": "stepAfter",
             "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
           },
           "unit": "short"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "party_sockets_clients",
-          "legendFormat": "{{region}} · {{instance}}",
+          "expr": "sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"})",
+          "legendFormat": "{{origin}}",
           "refId": "A"
         }
       ]
@@ -234,7 +294,7 @@
     {
       "id": 21,
       "type": "timeseries",
-      "title": "Live rooms per machine",
+      "title": "Live clients by origin",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
       "fieldConfig": {
@@ -244,28 +304,31 @@
             "drawStyle": "line",
             "lineInterpolation": "stepAfter",
             "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 30,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
           },
           "unit": "short"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "party_sockets_rooms",
-          "legendFormat": "{{region}} · {{instance}}",
+          "expr": "sum by (origin) (party_sockets_clients_by_origin{region=~\"$region\"})",
+          "legendFormat": "{{origin}}",
           "refId": "A"
         }
       ]
     },
+
     {
       "id": 30,
       "type": "timeseries",
-      "title": "Connections / min (rate)",
+      "title": "Rooms created / min by origin",
+      "description": "Room creation rate over the last 5 min, broken down by origin.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
       "fieldConfig": {
@@ -275,20 +338,21 @@
             "drawStyle": "line",
             "lineInterpolation": "linear",
             "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 20,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
           },
           "unit": "cpm"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "rate(party_sockets_connections_total[5m]) * 60",
-          "legendFormat": "{{region}} · {{origin}}",
+          "expr": "sum by (origin) (rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])) * 60",
+          "legendFormat": "{{origin}}",
           "refId": "A"
         }
       ]
@@ -296,40 +360,260 @@
     {
       "id": 31,
       "type": "timeseries",
-      "title": "Rooms created / min (rate)",
+      "title": "Avg room lifetime (cluster)",
+      "description": "Little's Law estimate: live_rooms / room_creation_rate. Spikes during low-traffic windows are noise; trend matters.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
+          "color": { "mode": "thresholds" },
           "custom": {
             "drawStyle": "line",
             "lineInterpolation": "linear",
-            "lineWidth": 1,
+            "lineWidth": 2,
             "fillOpacity": 10,
             "showPoints": "never"
           },
-          "unit": "cpm"
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "s"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
+        "tooltip": { "mode": "single", "sort": "none" }
       },
       "targets": [
         {
-          "expr": "rate(party_sockets_rooms_created_total[5m]) * 60",
-          "legendFormat": "{{region}} · {{origin}}",
+          "expr": "sum(party_sockets_rooms{region=~\"$region\"}) / clamp_min(sum(rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])), 0.0001)",
+          "legendFormat": "avg lifetime",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 60,
+      "type": "geomap",
+      "title": "Clients per region (map)",
+      "description": "Marker size scales with live client count. Uses Grafana's built-in airports gazetteer (IATA codes). Server uppercases the `region` label at metrics exposition so it matches the gazetteer's IATA_CODE keys.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "blue", "value": null },
+              { "color": "green", "value": 50 },
+              { "color": "orange", "value": 500 },
+              { "color": "red", "value": 2000 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "view": { "id": "zero", "lat": 25, "lon": 10, "zoom": 1.5 },
+        "controls": {
+          "showZoom": true,
+          "mouseWheelZoom": true,
+          "showAttribution": true,
+          "showScale": false,
+          "showMeasure": false,
+          "showDebug": false
+        },
+        "basemap": { "type": "default", "name": "Basemap" },
+        "layers": [
+          {
+            "type": "markers",
+            "name": "Clients",
+            "tooltip": true,
+            "config": {
+              "showLegend": true,
+              "style": {
+                "color": { "field": "Value", "fixed": "blue" },
+                "size": { "field": "Value", "fixed": 5, "min": 4, "max": 30 },
+                "opacity": 0.7,
+                "rotation": { "fixed": 0, "max": 360, "min": -360, "mode": "mod" },
+                "symbol": { "fixed": "img/icons/marker/circle.svg", "mode": "fixed" },
+                "textConfig": { "fontSize": 12, "offsetX": 0, "offsetY": 0, "textAlign": "center", "textBaseline": "middle" }
+              }
+            },
+            "location": {
+              "mode": "lookup",
+              "lookup": "region",
+              "gazetteer": "public/gazetteer/airports.geojson"
+            }
+          }
+        ]
+      },
+      "targets": [
+        {
+          "expr": "sum by (region) (party_sockets_clients)",
+          "format": "table",
+          "instant": true,
           "refId": "A"
         }
       ]
     },
     {
+      "id": 61,
+      "type": "timeseries",
+      "title": "Live rooms by region",
+      "description": "Stacked. Track regional shifts over time — useful for spotting traffic moving between regions or autoscaling kicking in.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 10 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (region) (party_sockets_rooms{region=~\"$region\"})",
+          "legendFormat": "{{region}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
+      "id": 70,
+      "type": "timeseries",
+      "title": "Live clients by region",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 0, "y": 38, "w": 8, "h": 8 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "stepAfter",
+            "lineWidth": 1,
+            "fillOpacity": 40,
+            "showPoints": "never",
+            "stacking": { "mode": "normal", "group": "A" }
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "sum by (region) (party_sockets_clients{region=~\"$region\"})",
+          "legendFormat": "{{region}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 71,
+      "type": "bargauge",
+      "title": "Machines per region",
+      "description": "Useful for spotting Fly autoscaling activity or regions that have lost capacity.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 8, "y": 38, "w": 8, "h": 8 },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "count by (region) (party_sockets_clients)",
+          "legendFormat": "{{region}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 72,
+      "type": "piechart",
+      "title": "Rooms by region (snapshot)",
+      "description": "Current geographic distribution of rooms. Imbalance is fine if it matches user demand.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 16, "y": 38, "w": 8, "h": 8 },
+      "options": {
+        "displayLabels": ["name", "percent"],
+        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "sum by (region) (party_sockets_rooms)",
+          "legendFormat": "{{region}}",
+          "refId": "A"
+        }
+      ]
+    },
+
+    {
       "id": 40,
       "type": "bargauge",
-      "title": "Top origins (since-boot connections)",
+      "title": "Top origins by live rooms",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 46, "w": 12, "h": 8 },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"}))",
+          "legendFormat": "{{origin}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 42,
+      "type": "bargauge",
+      "title": "Clients per room by origin",
+      "description": "Per-origin social density. Low values = people waiting alone; high values = busy parties.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 46, "w": 12, "h": 8 },
       "options": {
         "displayMode": "gradient",
         "orientation": "horizontal",
@@ -340,24 +624,26 @@
         "defaults": {
           "color": { "mode": "thresholds" },
           "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
+          "unit": "short",
+          "decimals": 2
         }
       },
       "targets": [
         {
-          "expr": "topk(10, sum by (origin) (party_sockets_connections_total))",
+          "expr": "topk(10, sum by (origin) (party_sockets_clients_by_origin{region=~\"$region\"}) / clamp_min(sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"}), 1))",
           "legendFormat": "{{origin}}",
           "refId": "A"
         }
       ]
     },
+
     {
-      "id": 41,
+      "id": 50,
       "type": "timeseries",
-      "title": "Process uptime per machine",
-      "description": "Big drops indicate restarts (often OOM kills).",
+      "title": "RSS as % of VM memory limit",
+      "description": "Per machine. Limit is the `mem_limit_bytes` dashboard variable — change it in the var bar when you resize the VM.",
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 8 },
+      "gridPos": { "x": 0, "y": 54, "w": 12, "h": 7 },
       "fieldConfig": {
         "defaults": {
           "color": { "mode": "palette-classic" },
@@ -365,19 +651,69 @@
             "drawStyle": "line",
             "lineInterpolation": "linear",
             "lineWidth": 1,
-            "fillOpacity": 10,
-            "showPoints": "never"
+            "fillOpacity": 5,
+            "showPoints": "never",
+            "thresholdsStyle": { "mode": "line" }
           },
-          "unit": "s"
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 0.8 },
+              { "color": "red", "value": 0.95 }
+            ]
+          },
+          "unit": "percentunit",
+          "min": 0,
+          "max": 1
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "bottom", "calcs": ["mean", "max"] },
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
         "tooltip": { "mode": "multi", "sort": "desc" }
       },
       "targets": [
         {
-          "expr": "process_uptime_seconds",
+          "expr": "process_resident_memory_bytes{region=~\"$region\"} / $mem_limit_bytes",
+          "legendFormat": "{{region}} · {{instance}}",
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "Restarts per machine (1h window)",
+      "description": "resets() on uptime — counts process restarts in the last hour. Sustained > 0 means OOM loop.",
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "gridPos": { "x": 12, "y": 54, "w": 12, "h": 7 },
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "palette-classic" },
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 70,
+            "showPoints": "never"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "orange", "value": 1 },
+              { "color": "red", "value": 3 }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "max"] },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "expr": "resets(process_uptime_seconds{region=~\"$region\"}[1h])",
           "legendFormat": "{{region}} · {{instance}}",
           "refId": "A"
         }
@@ -398,6 +734,39 @@
         "includeAll": false,
         "multi": false,
         "refresh": 1
+      },
+      {
+        "name": "region",
+        "type": "query",
+        "label": "Region",
+        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+        "query": "label_values(party_sockets_clients, region)",
+        "refresh": 2,
+        "includeAll": true,
+        "multi": true,
+        "allValue": ".*",
+        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "hide": 0,
+        "sort": 1
+      },
+      {
+        "name": "mem_limit_bytes",
+        "type": "custom",
+        "label": "VM memory limit",
+        "description": "Per-VM memory limit (bytes). Used by the RSS-percent panel. Update when fly.toml [[vm]] memory_mb changes.",
+        "query": "256MB : 268435456,512MB : 536870912,1GB : 1073741824,2GB : 2147483648,4GB : 4294967296,8GB : 8589934592",
+        "current": { "selected": true, "text": "256MB", "value": "268435456" },
+        "options": [
+          { "selected": true, "text": "256MB", "value": "268435456" },
+          { "selected": false, "text": "512MB", "value": "536870912" },
+          { "selected": false, "text": "1GB", "value": "1073741824" },
+          { "selected": false, "text": "2GB", "value": "2147483648" },
+          { "selected": false, "text": "4GB", "value": "4294967296" },
+          { "selected": false, "text": "8GB", "value": "8589934592" }
+        ],
+        "includeAll": false,
+        "multi": false,
+        "hide": 0
       }
     ]
   },
@@ -406,6 +775,6 @@
   "timezone": "",
   "title": "Party-Sockets",
   "uid": "party-sockets",
-  "version": 1,
+  "version": 3,
   "weekStart": ""
 }
