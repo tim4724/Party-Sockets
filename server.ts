@@ -589,12 +589,14 @@ const server = Bun.serve({
     }
 
     // Pull a candidate room code out of either /<code> (WS upgrade) or
-    // /room/<code> (HTTP existence check). The path form is exactly 6 chars,
-    // matching a real code length.
+    // /room/<code> (HTTP existence check) or /room/<code>/leave (HTTP beacon
+    // teardown). The path form is exactly 6 chars, matching a real code length.
     const pathRoomMatch = url.pathname.match(/^\/([A-Za-z0-9]{6})$/);
     const apiRoomMatch = pathRoomMatch ? null : url.pathname.match(/^\/room\/([^/]+)$/);
+    const apiLeaveMatch = pathRoomMatch ? null : url.pathname.match(/^\/room\/([^/]+)\/leave$/);
     const candidateCode = pathRoomMatch?.[1]
-      ?? (apiRoomMatch ? decodeURIComponent(apiRoomMatch[1]) : null);
+      ?? (apiRoomMatch ? decodeURIComponent(apiRoomMatch[1]) : null)
+      ?? (apiLeaveMatch ? decodeURIComponent(apiLeaveMatch[1]) : null);
 
     if (candidateCode && !requestedInstance && REGION_IDX !== null) {
       // Codes self-route: decode the region from the code's top 5 bits.
@@ -608,6 +610,59 @@ const server = Bun.serve({
         const peerInstance = await findRoomOnPeers(candidateCode, REGION);
         if (peerInstance) return flyReplayToInstance(peerInstance);
       }
+    }
+
+    // Beacon teardown: a client can POST here from a `pagehide` handler via
+    // navigator.sendBeacon, to be torn down without depending on the WS close
+    // frame surviving renderer destruction. (Android Chrome routinely drops
+    // the close frame on tab close — see crbug 40378664.) The beacon body
+    // carries the slot's bearer secret (clientId) for proof-of-ownership.
+    // Idempotent: missing room or wrong clientId resolves to 204 to avoid
+    // leaking room/slot existence to scanners.
+    if (apiLeaveMatch && candidateCode) {
+      const corsHeaders = { "Access-Control-Allow-Origin": "*" };
+      if (req.method !== "POST") {
+        return new Response(null, {
+          status: 405,
+          headers: { ...corsHeaders, "Allow": "POST" },
+        });
+      }
+      let clientId: string | null = null;
+      try {
+        const body = await req.formData();
+        const v = body.get("clientId");
+        if (typeof v === "string") clientId = v;
+      } catch {
+        return new Response(null, { status: 400, headers: corsHeaders });
+      }
+      if (!clientId) {
+        return new Response(null, { status: 400, headers: corsHeaders });
+      }
+      const room = rooms.get(candidateCode);
+      if (room) {
+        const memberIndex = room.members.findIndex((m) => m?.clientId === clientId);
+        if (memberIndex !== -1) {
+          const member = room.members[memberIndex]!;
+          // Only act if the slot's currently active. If member.ws is already
+          // unset, the prior close already broadcast peer_left — re-broadcasting
+          // would confuse clients that expect peer_left ↔ peer_joined to pair.
+          if (member.ws) {
+            // Detach so the WS close handler doesn't double-process the slot.
+            member.ws.data.room = undefined;
+            member.ws.data.clientId = undefined;
+            member.ws.data.index = undefined;
+            try { member.ws.close(4001, "leave"); } catch {}
+            member.ws = undefined;
+            room.active--;
+            if (room.active === 0) {
+              rooms.delete(candidateCode);
+            } else {
+              broadcast(candidateCode, { type: "peer_left", index: memberIndex });
+            }
+          }
+        }
+      }
+      return new Response(null, { status: 204, headers: corsHeaders });
     }
 
     if (apiRoomMatch && candidateCode) {

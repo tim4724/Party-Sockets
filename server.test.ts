@@ -535,6 +535,133 @@ describe("room info endpoint", () => {
   });
 });
 
+describe("leave endpoint", () => {
+  const HTTP_URL = `http://localhost:${server.port}`;
+
+  function leaveBody(clientId: string): URLSearchParams {
+    return new URLSearchParams({ clientId });
+  }
+
+  test("drops the slot and broadcasts peer_left", async () => {
+    const host = track(await connect());
+    sendMsg(host, { type: "create", clientId: "host-secret", maxClients: 4 });
+    const created = await waitForType(host, "created");
+
+    const guest = track(await connect());
+    sendMsg(guest, { type: "join", clientId: "guest-secret", room: created.room });
+    await waitForType(guest, "joined");
+    await waitForType(host, "peer_joined");
+
+    const peerLeft = waitForType(host, "peer_left");
+    const res = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("guest-secret"),
+    });
+    expect(res.status).toBe(204);
+
+    const left = await peerLeft;
+    expect(left.index).toBe(1);
+  });
+
+  test("204 for unknown room (idempotent — beacon may fire after teardown)", async () => {
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 999)}/leave`, {
+      method: "POST",
+      body: leaveBody("anyone"),
+    });
+    expect(res.status).toBe(204);
+  });
+
+  test("204 for wrong clientId (does not leak slot existence)", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "host-secret", maxClients: 4 });
+    const created = await waitForType(ws, "created");
+
+    const res = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("not-the-host"),
+    });
+    expect(res.status).toBe(204);
+
+    // Slot still alive
+    const info = await fetch(`${HTTP_URL}/room/${created.room}`).then((r) => r.json());
+    expect(info.clients).toBe(1);
+  });
+
+  test("400 when clientId missing", async () => {
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 1)}/leave`, {
+      method: "POST",
+      body: new URLSearchParams(),
+    });
+    expect(res.status).toBe(400);
+  });
+
+  test("405 on non-POST", async () => {
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 1)}/leave`);
+    expect(res.status).toBe(405);
+    expect(res.headers.get("allow")).toBe("POST");
+  });
+
+  test("idempotent: second call after slot is already gone is a no-op", async () => {
+    const host = track(await connect());
+    sendMsg(host, { type: "create", clientId: "host-secret", maxClients: 4 });
+    const created = await waitForType(host, "created");
+
+    const guest = track(await connect());
+    sendMsg(guest, { type: "join", clientId: "guest-secret", room: created.room });
+    await waitForType(guest, "joined");
+    await waitForType(host, "peer_joined");
+
+    // First leave: peer_left fires once.
+    const firstLeft = waitForType(host, "peer_left");
+    const res1 = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("guest-secret"),
+    });
+    expect(res1.status).toBe(204);
+    await firstLeft;
+
+    // Second leave: 204, no further peer_left (would imply slot revival).
+    let secondPeerLeftFired = false;
+    const onMsg = (event: MessageEvent) => {
+      const m = JSON.parse(event.data);
+      if (m.type === "peer_left") secondPeerLeftFired = true;
+    };
+    host.addEventListener("message", onMsg);
+    const res2 = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("guest-secret"),
+    });
+    expect(res2.status).toBe(204);
+    await new Promise((r) => setTimeout(r, 100));
+    host.removeEventListener("message", onMsg);
+    expect(secondPeerLeftFired).toBe(false);
+  });
+
+  test("closing host via leave deletes the room when last member", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "solo", maxClients: 4 });
+    const created = await waitForType(ws, "created");
+    expect(rooms.has(created.room)).toBe(true);
+
+    const res = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("solo"),
+    });
+    expect(res.status).toBe(204);
+    // give the close handler a microtask to settle
+    await new Promise((r) => setTimeout(r, 50));
+    expect(rooms.has(created.room)).toBe(false);
+  });
+
+  test("sets permissive CORS header", async () => {
+    const res = await fetch(`${HTTP_URL}/room/${codeForRegion("fra", 1)}/leave`, {
+      method: "POST",
+      body: leaveBody("x"),
+    });
+    expect(res.headers.get("access-control-allow-origin")).toBe("*");
+  });
+});
+
 describe("metrics endpoint", () => {
   const HTTP_URL = `http://localhost:${server.port}`;
 

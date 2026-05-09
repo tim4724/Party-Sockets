@@ -176,6 +176,17 @@ Check whether a room exists on this server. The handling machine's ID is returne
 - **200** — room found: `{ clients: number, maxClients: number, origin: string }`
 - **404** — room not found: `{ error: "Room not found" }`
 
+### `POST /room/:code/leave`
+
+Beacon teardown. Closes the slot owned by `clientId` and broadcasts `peer_left` to the rest of the room. Designed to be called via `navigator.sendBeacon` from a `pagehide` handler — Android Chrome routinely drops the WebSocket close frame on tab close ([crbug 40378664](https://issues.chromium.org/issues/40378664)), so the renderer-independent network-service delivery of `sendBeacon` is what gets the leave to the server.
+
+- Body (form-urlencoded): `clientId=<the slot's bearer secret>`
+- **204** — leave processed, slot dropped, or idempotent no-op (room/slot not found, slot already inactive). Does not distinguish, to avoid leaking room/slot existence to scanners.
+- **400** — missing or empty `clientId`
+- **405** — non-POST method
+
+The replaced WebSocket (if any) is closed with code `4001` reason `"leave"`.
+
 ### `GET /metrics`
 
 Prometheus exposition format. Exposes:
