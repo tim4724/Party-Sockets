@@ -1,5 +1,22 @@
 {
-  "annotations": { "list": [] },
+  "annotations": {
+    "list": [
+      {
+        "name": "Deploys",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "enable": true,
+        "iconColor": "rgba(255, 96, 96, 1)",
+        "expr": "count by (version) (party_sockets_clients) unless on(version) (count by (version) (party_sockets_clients) offset 5m)",
+        "step": "1m",
+        "titleFormat": "Deploy {{version}}",
+        "tagKeys": "version",
+        "useValueForTime": false
+      }
+    ]
+  },
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
@@ -7,414 +24,147 @@
   "panels": [
     {
       "id": 1,
-      "type": "stat",
-      "title": "Live rooms (cluster)",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(party_sockets_rooms{region=~\"$region\"})",
-          "legendFormat": "rooms",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 2,
-      "type": "stat",
-      "title": "Live clients (cluster)",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 4, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(party_sockets_clients{region=~\"$region\"})",
-          "legendFormat": "clients",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 3,
-      "type": "stat",
-      "title": "Avg clients / room",
-      "description": "Cluster-wide social density. 1.0 = empty rooms (peers waiting). Healthy values depend on your traffic shape.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 8, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
-          "unit": "short",
-          "decimals": 2
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(party_sockets_clients{region=~\"$region\"}) / clamp_min(sum(party_sockets_rooms{region=~\"$region\"}), 1)",
-          "legendFormat": "clients/room",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 4,
-      "type": "stat",
-      "title": "Rooms created / min",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
-          "unit": "cpm",
-          "decimals": 1
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])) * 60",
-          "legendFormat": "rooms/min",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 5,
-      "type": "stat",
-      "title": "Connections / min",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 16, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "area",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "purple", "value": null }] },
-          "unit": "cpm",
-          "decimals": 1
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum(rate(party_sockets_connections_total{region=~\"$region\"}[5m])) * 60",
-          "legendFormat": "conn/min",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 6,
-      "type": "stat",
-      "title": "Machines reporting",
-      "description": "Threshold tuned for 14-machine fleet. Adjust steps if you scale.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 20, "y": 0, "w": 4, "h": 4 },
-      "options": {
-        "colorMode": "value",
-        "graphMode": "none",
-        "justifyMode": "center",
-        "orientation": "auto",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "textMode": "auto"
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "red", "value": null },
-              { "color": "yellow", "value": 13 },
-              { "color": "green", "value": 14 }
-            ]
-          },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "count(party_sockets_clients)",
-          "legendFormat": "machines",
-          "refId": "A"
-        }
-      ]
-    },
-
-    {
-      "id": 10,
-      "type": "timeseries",
-      "title": "Live rooms per machine",
-      "description": "Stacked. Watch for hotspots — Fly's soft_limit should fan out before any single machine saturates.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 4, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "expr": "party_sockets_rooms{region=~\"$region\"}",
-          "legendFormat": "{{region}} · {{instance}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 11,
-      "type": "timeseries",
-      "title": "Live clients per machine",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 4, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "expr": "party_sockets_clients{region=~\"$region\"}",
-          "legendFormat": "{{region}} · {{instance}}",
-          "refId": "A"
-        }
-      ]
-    },
-
-    {
-      "id": 20,
-      "type": "timeseries",
-      "title": "Live rooms by origin",
-      "description": "Per-origin live room count (cluster-wide). Origins beyond MAX_ORIGIN_SERIES are bucketed as `__other__`.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 12, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "expr": "sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"})",
-          "legendFormat": "{{origin}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 21,
-      "type": "timeseries",
-      "title": "Live clients by origin",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 12, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 30,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "short"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "expr": "sum by (origin) (party_sockets_clients_by_origin{region=~\"$region\"})",
-          "legendFormat": "{{origin}}",
-          "refId": "A"
-        }
-      ]
-    },
-
-    {
-      "id": 30,
-      "type": "timeseries",
-      "title": "Rooms created / min by origin",
-      "description": "Room creation rate over the last 5 min, broken down by origin.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "fillOpacity": 20,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
-          },
-          "unit": "cpm"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
-      "targets": [
-        {
-          "expr": "sum by (origin) (rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])) * 60",
-          "legendFormat": "{{origin}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 31,
-      "type": "timeseries",
-      "title": "Avg room lifetime (cluster)",
-      "description": "Little's Law estimate: live_rooms / room_creation_rate. Spikes during low-traffic windows are noise; trend matters.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 8 },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 2,
-            "fillOpacity": 10,
-            "showPoints": "never"
-          },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
-          "unit": "s"
-        }
-      },
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean", "max"] },
-        "tooltip": { "mode": "single", "sort": "none" }
-      },
-      "targets": [
-        {
-          "expr": "sum(party_sockets_rooms{region=~\"$region\"}) / clamp_min(sum(rate(party_sockets_rooms_created_total{region=~\"$region\"}[5m])), 0.0001)",
-          "legendFormat": "avg lifetime",
-          "refId": "A"
-        }
-      ]
-    },
-
-    {
-      "id": 60,
       "type": "geomap",
-      "title": "Clients per region (map)",
-      "description": "Marker size scales with live client count. Uses Grafana's built-in airports gazetteer (IATA codes). Server uppercases the `region` label at metrics exposition so it matches the gazetteer's IATA_CODE keys.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 10 },
+      "title": "Peak clients by region",
+      "description": "Largest simultaneous client count each region reached during the dashboard's time range. Marker size and color scale with peak load. Hover for the friendly name.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 14
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
+          "color": {
+            "mode": "thresholds"
+          },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "blue", "value": null },
-              { "color": "green", "value": 50 },
-              { "color": "orange", "value": 500 },
-              { "color": "red", "value": 2000 }
+              {
+                "color": "blue",
+                "value": null
+              },
+              {
+                "color": "green",
+                "value": 50
+              },
+              {
+                "color": "yellow",
+                "value": 250
+              },
+              {
+                "color": "orange",
+                "value": 1000
+              },
+              {
+                "color": "red",
+                "value": 3000
+              }
             ]
           },
-          "unit": "short"
+          "mappings": [
+            {
+              "type": "value",
+              "options": {
+                "AMS": {
+                  "text": "Europe · Amsterdam",
+                  "index": 0
+                },
+                "ARN": {
+                  "text": "Europe · Stockholm",
+                  "index": 1
+                },
+                "BOM": {
+                  "text": "Asia · Mumbai",
+                  "index": 2
+                },
+                "CDG": {
+                  "text": "Europe · Paris",
+                  "index": 3
+                },
+                "DFW": {
+                  "text": "US Central · Dallas",
+                  "index": 4
+                },
+                "EWR": {
+                  "text": "US East · Newark",
+                  "index": 5
+                },
+                "FRA": {
+                  "text": "Europe · Frankfurt",
+                  "index": 6
+                },
+                "GRU": {
+                  "text": "South America · São Paulo",
+                  "index": 7
+                },
+                "IAD": {
+                  "text": "US East · Washington",
+                  "index": 8
+                },
+                "JNB": {
+                  "text": "Africa · Johannesburg",
+                  "index": 9
+                },
+                "LAX": {
+                  "text": "US West · Los Angeles",
+                  "index": 10
+                },
+                "LHR": {
+                  "text": "Europe · London",
+                  "index": 11
+                },
+                "NRT": {
+                  "text": "Asia · Tokyo",
+                  "index": 12
+                },
+                "ORD": {
+                  "text": "US East · Chicago",
+                  "index": 13
+                },
+                "SIN": {
+                  "text": "Asia · Singapore",
+                  "index": 14
+                },
+                "SJC": {
+                  "text": "US West · San Jose",
+                  "index": 15
+                },
+                "SYD": {
+                  "text": "Oceania · Sydney",
+                  "index": 16
+                },
+                "YYZ": {
+                  "text": "Canada · Toronto",
+                  "index": 17
+                }
+              }
+            }
+          ],
+          "unit": "short",
+          "min": 0,
+          "max": 3000,
+          "links": [
+            {
+              "title": "Filter dashboard to ${__data.fields.region}",
+              "url": "/d/${__dashboard.uid}?var-region=${__data.fields.region_id}&${__url_time_range}",
+              "targetBlank": false
+            }
+          ]
         }
       },
       "options": {
-        "view": { "id": "zero", "lat": 25, "lon": 10, "zoom": 1.5 },
+        "view": {
+          "id": "zero",
+          "lat": 25,
+          "lon": 10,
+          "zoom": 1.7
+        },
         "controls": {
           "showZoom": true,
           "mouseWheelZoom": true,
@@ -423,7 +173,13 @@
           "showMeasure": false,
           "showDebug": false
         },
-        "basemap": { "type": "default", "name": "Basemap" },
+        "basemap": {
+          "type": "default",
+          "name": "Basemap"
+        },
+        "tooltip": {
+          "mode": "details"
+        },
         "layers": [
           {
             "type": "markers",
@@ -432,12 +188,38 @@
             "config": {
               "showLegend": true,
               "style": {
-                "color": { "field": "Value", "fixed": "blue" },
-                "size": { "field": "Value", "fixed": 5, "min": 4, "max": 30 },
-                "opacity": 0.7,
-                "rotation": { "fixed": 0, "max": 360, "min": -360, "mode": "mod" },
-                "symbol": { "fixed": "img/icons/marker/circle.svg", "mode": "fixed" },
-                "textConfig": { "fontSize": 12, "offsetX": 0, "offsetY": 0, "textAlign": "center", "textBaseline": "middle" }
+                "color": {
+                  "field": "Value"
+                },
+                "size": {
+                  "field": "Value",
+                  "fixed": 6,
+                  "min": 28,
+                  "max": 70
+                },
+                "opacity": 0.75,
+                "rotation": {
+                  "fixed": 0,
+                  "max": 360,
+                  "min": -360,
+                  "mode": "mod"
+                },
+                "symbol": {
+                  "fixed": "img/icons/marker/circle.svg",
+                  "mode": "fixed"
+                },
+                "text": {
+                  "mode": "field",
+                  "field": "Value",
+                  "fixed": ""
+                },
+                "textConfig": {
+                  "fontSize": 14,
+                  "offsetX": 0,
+                  "offsetY": 0,
+                  "textAlign": "center",
+                  "textBaseline": "middle"
+                }
               }
             },
             "location": {
@@ -450,271 +232,387 @@
       },
       "targets": [
         {
-          "expr": "sum by (region) (party_sockets_clients)",
+          "expr": "label_replace(max_over_time(sum by (region) (party_sockets_clients{region=~\"(?i)$region\"})[$__range:]), \"region_id\", \"$1\", \"region\", \"(.*)\")",
           "format": "table",
           "instant": true,
           "refId": "A"
         }
+      ],
+      "transformations": [
+        {
+          "id": "formatString",
+          "options": {
+            "stringField": "region",
+            "outputFormat": "Upper Case"
+          }
+        }
       ]
     },
     {
-      "id": 61,
-      "type": "timeseries",
-      "title": "Live rooms by region",
-      "description": "Stacked. Track regional shifts over time — useful for spotting traffic moving between regions or autoscaling kicking in.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 10 },
+      "id": 10,
+      "type": "stat",
+      "title": "Live rooms",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 14,
+        "w": 6,
+        "h": 4
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 40,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
           },
           "unit": "short"
         }
       },
-      "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max", "lastNotNull"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
       "targets": [
         {
-          "expr": "sum by (region) (party_sockets_rooms{region=~\"$region\"})",
-          "legendFormat": "{{region}}",
+          "expr": "sum(party_sockets_rooms{region=~\"(?i)$region\"})",
+          "legendFormat": "rooms",
           "refId": "A"
         }
       ]
     },
-
     {
-      "id": 70,
-      "type": "timeseries",
-      "title": "Live clients by region",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 38, "w": 8, "h": 8 },
+      "id": 11,
+      "type": "stat",
+      "title": "Live clients",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 6,
+        "y": 14,
+        "w": 6,
+        "h": 4
+      },
+      "options": {
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "stepAfter",
-            "lineWidth": 1,
-            "fillOpacity": 40,
-            "showPoints": "never",
-            "stacking": { "mode": "normal", "group": "A" }
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
           },
           "unit": "short"
         }
       },
-      "options": {
-        "legend": { "displayMode": "list", "placement": "bottom", "calcs": ["mean"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
-      },
       "targets": [
         {
-          "expr": "sum by (region) (party_sockets_clients{region=~\"$region\"})",
-          "legendFormat": "{{region}}",
+          "expr": "sum(party_sockets_clients{region=~\"(?i)$region\"})",
+          "legendFormat": "clients",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 71,
-      "type": "bargauge",
-      "title": "Machines per region",
-      "description": "Useful for spotting Fly autoscaling activity or regions that have lost capacity.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 8, "y": 38, "w": 8, "h": 8 },
+      "id": 12,
+      "type": "stat",
+      "title": "Active machines",
+      "description": "Count of machines currently reporting metrics. Drops indicate a machine crashed, was scaled down, or scrape failed — cross-check the Activity panel below to see which region went dark.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 14,
+        "w": 6,
+        "h": 4
+      },
       "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "blue"
+          },
           "unit": "short"
         }
       },
       "targets": [
         {
-          "expr": "count by (region) (party_sockets_clients)",
-          "legendFormat": "{{region}}",
+          "expr": "count(party_sockets_clients{region=~\"(?i)$region\"})",
+          "legendFormat": "machines",
           "refId": "A"
         }
       ]
     },
     {
-      "id": 72,
-      "type": "piechart",
-      "title": "Rooms by region (snapshot)",
-      "description": "Current geographic distribution of rooms. Imbalance is fine if it matches user demand.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 16, "y": 38, "w": 8, "h": 8 },
+      "id": 13,
+      "type": "stat",
+      "title": "Clients per room",
+      "description": "Total live clients / total live rooms across the cluster, right now. 1.0 = empty rooms (peers waiting). Higher = busier parties.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 18,
+        "y": 14,
+        "w": 6,
+        "h": 4
+      },
       "options": {
-        "displayLabels": ["name", "percent"],
-        "legend": { "displayMode": "table", "placement": "right", "values": ["value", "percent"] },
-        "pieType": "donut",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "tooltip": { "mode": "single", "sort": "none" }
+        "colorMode": "value",
+        "graphMode": "area",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "textMode": "auto"
       },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "sum by (region) (party_sockets_rooms)",
-          "legendFormat": "{{region}}",
-          "refId": "A"
-        }
-      ]
-    },
-
-    {
-      "id": 40,
-      "type": "bargauge",
-      "title": "Top origins by live rooms",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 46, "w": 12, "h": 8 },
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "blue", "value": null }] },
-          "unit": "short"
-        }
-      },
-      "targets": [
-        {
-          "expr": "topk(10, sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"}))",
-          "legendFormat": "{{origin}}",
-          "refId": "A"
-        }
-      ]
-    },
-    {
-      "id": 42,
-      "type": "bargauge",
-      "title": "Clients per room by origin",
-      "description": "Per-origin social density. Low values = people waiting alone; high values = busy parties.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 46, "w": 12, "h": 8 },
-      "options": {
-        "displayMode": "gradient",
-        "orientation": "horizontal",
-        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
-        "showUnfilled": true
-      },
-      "fieldConfig": {
-        "defaults": {
-          "color": { "mode": "thresholds" },
-          "thresholds": { "mode": "absolute", "steps": [{ "color": "green", "value": null }] },
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "orange"
+          },
           "unit": "short",
           "decimals": 2
         }
       },
       "targets": [
         {
-          "expr": "topk(10, sum by (origin) (party_sockets_clients_by_origin{region=~\"$region\"}) / clamp_min(sum by (origin) (party_sockets_rooms_by_origin{region=~\"$region\"}), 1))",
-          "legendFormat": "{{origin}}",
+          "expr": "sum(party_sockets_clients{region=~\"(?i)$region\"}) / clamp_min(sum(party_sockets_rooms{region=~\"(?i)$region\"}), 1)",
+          "legendFormat": "clients/room",
           "refId": "A"
         }
       ]
     },
-
     {
-      "id": 50,
-      "type": "timeseries",
-      "title": "RSS as % of VM memory limit",
-      "description": "Per machine. Limit is the `mem_limit_bytes` dashboard variable — change it in the var bar when you resize the VM.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 0, "y": 54, "w": 12, "h": 7 },
+      "id": 30,
+      "type": "state-timeline",
+      "title": "Activity",
+      "description": "Per-region by default; switches to per-machine when a single region is selected. Grey = idle (0 rooms), yellow = light, green = busy. Hover for the exact count.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 18,
+        "w": 24,
+        "h": 10
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "line",
-            "lineInterpolation": "linear",
-            "lineWidth": 1,
-            "fillOpacity": 5,
-            "showPoints": "never",
-            "thresholdsStyle": { "mode": "line" }
+          "color": {
+            "mode": "thresholds"
           },
           "thresholds": {
             "mode": "absolute",
             "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 0.8 },
-              { "color": "red", "value": 0.95 }
+              {
+                "color": "transparent",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 1
+              },
+              {
+                "color": "green",
+                "value": 10
+              }
             ]
           },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
+          "custom": {
+            "fillOpacity": 75,
+            "lineWidth": 0,
+            "spanNulls": false
+          }
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["mean", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "showValue": "never",
+        "alignValue": "left",
+        "rowHeight": 0.95,
+        "mergeValues": true,
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
       },
       "targets": [
         {
-          "expr": "process_resident_memory_bytes{region=~\"$region\"} / $mem_limit_bytes",
-          "legendFormat": "{{region}} · {{instance}}",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((sum by (region) (party_sockets_rooms{region=~\"(?i)$region\"})) and on() (vector(${region_count}) > 1), \"region_name\", \"Europe · Amsterdam\", \"region\", \"ams\"), \"region_name\", \"Europe · Stockholm\", \"region\", \"arn\"), \"region_name\", \"Asia · Mumbai\", \"region\", \"bom\"), \"region_name\", \"Europe · Paris\", \"region\", \"cdg\"), \"region_name\", \"US Central · Dallas\", \"region\", \"dfw\"), \"region_name\", \"US East · Newark\", \"region\", \"ewr\"), \"region_name\", \"Europe · Frankfurt\", \"region\", \"fra\"), \"region_name\", \"South America · São Paulo\", \"region\", \"gru\"), \"region_name\", \"US East · Washington\", \"region\", \"iad\"), \"region_name\", \"Africa · Johannesburg\", \"region\", \"jnb\"), \"region_name\", \"US West · Los Angeles\", \"region\", \"lax\"), \"region_name\", \"Europe · London\", \"region\", \"lhr\"), \"region_name\", \"Asia · Tokyo\", \"region\", \"nrt\"), \"region_name\", \"US East · Chicago\", \"region\", \"ord\"), \"region_name\", \"Asia · Singapore\", \"region\", \"sin\"), \"region_name\", \"US West · San Jose\", \"region\", \"sjc\"), \"region_name\", \"Oceania · Sydney\", \"region\", \"syd\"), \"region_name\", \"Canada · Toronto\", \"region\", \"yyz\")",
+          "legendFormat": "{{region_name}}",
           "refId": "A"
+        },
+        {
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((party_sockets_rooms{region=~\"(?i)$region\"}) and on() (vector(${region_count}) == 1), \"region_name\", \"Europe · Amsterdam\", \"region\", \"ams\"), \"region_name\", \"Europe · Stockholm\", \"region\", \"arn\"), \"region_name\", \"Asia · Mumbai\", \"region\", \"bom\"), \"region_name\", \"Europe · Paris\", \"region\", \"cdg\"), \"region_name\", \"US Central · Dallas\", \"region\", \"dfw\"), \"region_name\", \"US East · Newark\", \"region\", \"ewr\"), \"region_name\", \"Europe · Frankfurt\", \"region\", \"fra\"), \"region_name\", \"South America · São Paulo\", \"region\", \"gru\"), \"region_name\", \"US East · Washington\", \"region\", \"iad\"), \"region_name\", \"Africa · Johannesburg\", \"region\", \"jnb\"), \"region_name\", \"US West · Los Angeles\", \"region\", \"lax\"), \"region_name\", \"Europe · London\", \"region\", \"lhr\"), \"region_name\", \"Asia · Tokyo\", \"region\", \"nrt\"), \"region_name\", \"US East · Chicago\", \"region\", \"ord\"), \"region_name\", \"Asia · Singapore\", \"region\", \"sin\"), \"region_name\", \"US West · San Jose\", \"region\", \"sjc\"), \"region_name\", \"Oceania · Sydney\", \"region\", \"syd\"), \"region_name\", \"Canada · Toronto\", \"region\", \"yyz\")",
+          "legendFormat": "{{region_name}} · {{instance}}",
+          "refId": "B"
         }
       ]
     },
     {
-      "id": 51,
+      "id": 20,
       "type": "timeseries",
-      "title": "Restarts per machine (1h window)",
-      "description": "resets() on uptime — counts process restarts in the last hour. Sustained > 0 means OOM loop.",
-      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-      "gridPos": { "x": 12, "y": 54, "w": 12, "h": 7 },
+      "title": "Live rooms over time",
+      "description": "Stacked. Per-region by default; switches to per-machine when a single region is selected.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
       "fieldConfig": {
         "defaults": {
-          "color": { "mode": "palette-classic" },
-          "custom": {
-            "drawStyle": "bars",
-            "lineWidth": 1,
-            "fillOpacity": 70,
-            "showPoints": "never"
+          "color": {
+            "mode": "palette-classic"
           },
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              { "color": "green", "value": null },
-              { "color": "orange", "value": 1 },
-              { "color": "red", "value": 3 }
-            ]
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "smooth",
+            "lineWidth": 1,
+            "fillOpacity": 50,
+            "gradientMode": "opacity",
+            "showPoints": "never",
+            "stacking": {
+              "mode": "normal",
+              "group": "A"
+            }
           },
           "unit": "short"
         }
       },
       "options": {
-        "legend": { "displayMode": "table", "placement": "right", "calcs": ["sum", "max"] },
-        "tooltip": { "mode": "multi", "sort": "desc" }
+        "legend": {
+          "displayMode": "table",
+          "placement": "right",
+          "calcs": [
+            "mean",
+            "max",
+            "lastNotNull"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
       },
       "targets": [
         {
-          "expr": "resets(process_uptime_seconds{region=~\"$region\"}[1h])",
-          "legendFormat": "{{region}} · {{instance}}",
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((sum by (region) (party_sockets_rooms{region=~\"(?i)$region\"})) and on() (vector(${region_count}) > 1), \"region_name\", \"Europe · Amsterdam\", \"region\", \"ams\"), \"region_name\", \"Europe · Stockholm\", \"region\", \"arn\"), \"region_name\", \"Asia · Mumbai\", \"region\", \"bom\"), \"region_name\", \"Europe · Paris\", \"region\", \"cdg\"), \"region_name\", \"US Central · Dallas\", \"region\", \"dfw\"), \"region_name\", \"US East · Newark\", \"region\", \"ewr\"), \"region_name\", \"Europe · Frankfurt\", \"region\", \"fra\"), \"region_name\", \"South America · São Paulo\", \"region\", \"gru\"), \"region_name\", \"US East · Washington\", \"region\", \"iad\"), \"region_name\", \"Africa · Johannesburg\", \"region\", \"jnb\"), \"region_name\", \"US West · Los Angeles\", \"region\", \"lax\"), \"region_name\", \"Europe · London\", \"region\", \"lhr\"), \"region_name\", \"Asia · Tokyo\", \"region\", \"nrt\"), \"region_name\", \"US East · Chicago\", \"region\", \"ord\"), \"region_name\", \"Asia · Singapore\", \"region\", \"sin\"), \"region_name\", \"US West · San Jose\", \"region\", \"sjc\"), \"region_name\", \"Oceania · Sydney\", \"region\", \"syd\"), \"region_name\", \"Canada · Toronto\", \"region\", \"yyz\")",
+          "legendFormat": "{{region_name}}",
+          "refId": "A"
+        },
+        {
+          "expr": "label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace((party_sockets_rooms{region=~\"(?i)$region\"}) and on() (vector(${region_count}) == 1), \"region_name\", \"Europe · Amsterdam\", \"region\", \"ams\"), \"region_name\", \"Europe · Stockholm\", \"region\", \"arn\"), \"region_name\", \"Asia · Mumbai\", \"region\", \"bom\"), \"region_name\", \"Europe · Paris\", \"region\", \"cdg\"), \"region_name\", \"US Central · Dallas\", \"region\", \"dfw\"), \"region_name\", \"US East · Newark\", \"region\", \"ewr\"), \"region_name\", \"Europe · Frankfurt\", \"region\", \"fra\"), \"region_name\", \"South America · São Paulo\", \"region\", \"gru\"), \"region_name\", \"US East · Washington\", \"region\", \"iad\"), \"region_name\", \"Africa · Johannesburg\", \"region\", \"jnb\"), \"region_name\", \"US West · Los Angeles\", \"region\", \"lax\"), \"region_name\", \"Europe · London\", \"region\", \"lhr\"), \"region_name\", \"Asia · Tokyo\", \"region\", \"nrt\"), \"region_name\", \"US East · Chicago\", \"region\", \"ord\"), \"region_name\", \"Asia · Singapore\", \"region\", \"sin\"), \"region_name\", \"US West · San Jose\", \"region\", \"sjc\"), \"region_name\", \"Oceania · Sydney\", \"region\", \"syd\"), \"region_name\", \"Canada · Toronto\", \"region\", \"yyz\")",
+          "legendFormat": "{{region_name}} · {{instance}}",
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "id": 21,
+      "type": "bargauge",
+      "title": "Top origins by live rooms",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${DS_PROMETHEUS}"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "options": {
+        "displayMode": "gradient",
+        "orientation": "horizontal",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showUnfilled": true
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "blue",
+                "value": null
+              }
+            ]
+          },
+          "unit": "short"
+        }
+      },
+      "targets": [
+        {
+          "expr": "topk(10, sum by (origin) (party_sockets_rooms_by_origin{region=~\"(?i)$region\"}))",
+          "legendFormat": "{{origin}}",
           "refId": "A"
         }
       ]
@@ -722,14 +620,20 @@
   ],
   "refresh": "30s",
   "schemaVersion": 38,
-  "tags": ["party-sockets"],
+  "tags": [
+    "party-sockets"
+  ],
   "templating": {
     "list": [
       {
         "name": "DS_PROMETHEUS",
         "type": "datasource",
         "query": "prometheus",
-        "current": { "selected": false, "text": "Prometheus on Fly", "value": "Prometheus on Fly" },
+        "current": {
+          "selected": false,
+          "text": "Prometheus on Fly",
+          "value": "Prometheus on Fly"
+        },
         "hide": 0,
         "includeAll": false,
         "multi": false,
@@ -739,42 +643,55 @@
         "name": "region",
         "type": "query",
         "label": "Region",
-        "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
-        "query": "label_values(party_sockets_clients, region)",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "query_result(group by (region, region_name) (label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(label_replace(party_sockets_clients, \"region_name\", \"Europe · Amsterdam\", \"region\", \"ams\"), \"region_name\", \"Europe · Stockholm\", \"region\", \"arn\"), \"region_name\", \"Asia · Mumbai\", \"region\", \"bom\"), \"region_name\", \"Europe · Paris\", \"region\", \"cdg\"), \"region_name\", \"US Central · Dallas\", \"region\", \"dfw\"), \"region_name\", \"US East · Newark\", \"region\", \"ewr\"), \"region_name\", \"Europe · Frankfurt\", \"region\", \"fra\"), \"region_name\", \"South America · São Paulo\", \"region\", \"gru\"), \"region_name\", \"US East · Washington\", \"region\", \"iad\"), \"region_name\", \"Africa · Johannesburg\", \"region\", \"jnb\"), \"region_name\", \"US West · Los Angeles\", \"region\", \"lax\"), \"region_name\", \"Europe · London\", \"region\", \"lhr\"), \"region_name\", \"Asia · Tokyo\", \"region\", \"nrt\"), \"region_name\", \"US East · Chicago\", \"region\", \"ord\"), \"region_name\", \"Asia · Singapore\", \"region\", \"sin\"), \"region_name\", \"US West · San Jose\", \"region\", \"sjc\"), \"region_name\", \"Oceania · Sydney\", \"region\", \"syd\"), \"region_name\", \"Canada · Toronto\", \"region\", \"yyz\")))",
+        "regex": "/region=\"(?<value>[^\"]+)\",\\s*region_name=\"(?<text>[^\"]+)\"/",
         "refresh": 2,
         "includeAll": true,
         "multi": true,
         "allValue": ".*",
-        "current": { "selected": true, "text": "All", "value": "$__all" },
+        "current": {
+          "selected": true,
+          "text": "All",
+          "value": "$__all"
+        },
         "hide": 0,
         "sort": 1
       },
       {
-        "name": "mem_limit_bytes",
-        "type": "custom",
-        "label": "VM memory limit",
-        "description": "Per-VM memory limit (bytes). Used by the RSS-percent panel. Update when fly.toml [[vm]] memory_mb changes.",
-        "query": "256MB : 268435456,512MB : 536870912,1GB : 1073741824,2GB : 2147483648,4GB : 4294967296,8GB : 8589934592",
-        "current": { "selected": true, "text": "256MB", "value": "268435456" },
-        "options": [
-          { "selected": true, "text": "256MB", "value": "268435456" },
-          { "selected": false, "text": "512MB", "value": "536870912" },
-          { "selected": false, "text": "1GB", "value": "1073741824" },
-          { "selected": false, "text": "2GB", "value": "2147483648" },
-          { "selected": false, "text": "4GB", "value": "4294967296" },
-          { "selected": false, "text": "8GB", "value": "8589934592" }
-        ],
+        "name": "region_count",
+        "type": "query",
+        "label": "",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "${DS_PROMETHEUS}"
+        },
+        "query": "query_result(count(group by (region) (party_sockets_rooms{region=~\"(?i)$region\"})))",
+        "regex": "/\\s(?<value>\\d+)\\s/",
+        "refresh": 2,
         "includeAll": false,
         "multi": false,
-        "hide": 0
+        "current": {
+          "selected": false,
+          "text": "0",
+          "value": "0"
+        },
+        "hide": 2,
+        "sort": 0
       }
     ]
   },
-  "time": { "from": "now-3h", "to": "now" },
+  "time": {
+    "from": "now-3h",
+    "to": "now"
+  },
   "timepicker": {},
   "timezone": "",
   "title": "Party-Sockets",
   "uid": "party-sockets",
-  "version": 3,
+  "version": 4,
   "weekStart": ""
 }
