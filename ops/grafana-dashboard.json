@@ -8,7 +8,7 @@
           "uid": "${DS_PROMETHEUS}"
         },
         "enable": true,
-        "iconColor": "rgba(255, 96, 96, 1)",
+        "iconColor": "rgba(168, 120, 224, 1)",
         "expr": "count by (version) (party_sockets_clients) unless on(version) (count by (version) (party_sockets_clients) offset 5m)",
         "step": "1m",
         "titleFormat": "Deploy {{version}}",
@@ -46,23 +46,23 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "blue",
+                "color": "super-light-blue",
                 "value": null
               },
               {
-                "color": "green",
+                "color": "light-blue",
                 "value": 50
               },
               {
-                "color": "yellow",
+                "color": "blue",
                 "value": 250
               },
               {
-                "color": "orange",
+                "color": "semi-dark-blue",
                 "value": 1000
               },
               {
-                "color": "red",
+                "color": "dark-blue",
                 "value": 3000
               }
             ]
@@ -325,7 +325,7 @@
         "defaults": {
           "color": {
             "mode": "fixed",
-            "fixedColor": "green"
+            "fixedColor": "blue"
           },
           "unit": "short"
         }
@@ -417,7 +417,7 @@
         "defaults": {
           "color": {
             "mode": "fixed",
-            "fixedColor": "orange"
+            "fixedColor": "blue"
           },
           "unit": "short",
           "decimals": 2
@@ -435,7 +435,7 @@
       "id": 30,
       "type": "state-timeline",
       "title": "Activity",
-      "description": "Per-region by default; switches to per-machine when a single region is selected. Grey = idle (0 rooms), yellow = light, green = busy. Hover for the exact count.",
+      "description": "Per-region by default; switches to per-machine when a single region is selected. Grey = idle (0 rooms), light blue = light, blue = busy. Hover for the exact count.",
       "datasource": {
         "type": "prometheus",
         "uid": "${DS_PROMETHEUS}"
@@ -455,15 +455,15 @@
             "mode": "absolute",
             "steps": [
               {
-                "color": "transparent",
+                "color": "#3a3f4b",
                 "value": null
               },
               {
-                "color": "yellow",
+                "color": "light-blue",
                 "value": 1
               },
               {
-                "color": "green",
+                "color": "blue",
                 "value": 10
               }
             ]
