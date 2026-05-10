@@ -362,6 +362,13 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
       existing.ws.data.index = undefined;
       existing.ws.close(4000, "replaced");
     } else {
+      // Reclaim of a disconnected slot. Disconnects free the cap, so by the
+      // time the original owner returns the room may have re-filled with new
+      // joiners. First-come-first-served — no special priority for prior
+      // owners.
+      if (room.active >= room.maxClients) {
+        return send(ws, { type: "error", message: "Room is full" });
+      }
       room.active++;
     }
 
@@ -377,7 +384,11 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
     return;
   }
 
-  if (room.members.length >= room.maxClients) {
+  // Cap counts live clients, not allocated slots. A disconnected slot
+  // (battery dead, network drop, tab closed) frees the spot. New joiners
+  // always push to the end, so indices grow monotonically and may exceed
+  // maxClients in long-lived rooms with churn.
+  if (room.active >= room.maxClients) {
     return send(ws, { type: "error", message: "Room is full" });
   }
 

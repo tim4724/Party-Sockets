@@ -386,7 +386,10 @@ describe("reconnect", () => {
     expect(rooms.get(room)?.active).toBe(2);
   });
 
-  test("new clientId cannot consume a disconnected owned slot", async () => {
+  test("disconnected slot frees the cap for a new joiner at the next index", async () => {
+    // Cap reflects live clients. When guest disconnects (battery, network,
+    // tab closed — not just intentional), a stranger can take the spot.
+    // Indices are still never reassigned: the stranger gets index 2, not 1.
     const ws1 = track(await connect());
     sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
     const { room } = await waitForType(ws1, "created");
@@ -401,11 +404,41 @@ describe("reconnect", () => {
 
     const ws3 = track(await connect());
     sendMsg(ws3, { type: "join", clientId: "stranger", room });
-    const msg = await waitForType(ws3, "error");
+    const joinMsg = await waitForType(ws3, "joined");
 
-    expect(msg.message).toBe("Room is full");
-    expect(rooms.get(room)?.active).toBe(1);
-    expect(rooms.get(room)?.members).toHaveLength(2);
+    expect(joinMsg.index).toBe(2);
+    expect(rooms.get(room)?.active).toBe(2);
+    expect(rooms.get(room)?.members).toHaveLength(3);
+  });
+
+  test("reclaim fails when room re-filled while disconnected", async () => {
+    // First-come-first-served: if a stranger took the freed spot before the
+    // original owner reconnected, the owner gets "Room is full" — the slot
+    // still exists in members[] but the cap is exhausted.
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const peerLeftPromise = waitForType(ws1, "peer_left");
+    ws2.close();
+    await peerLeftPromise;
+
+    // Stranger fills the freed spot.
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "stranger", room });
+    await waitForType(ws3, "joined");
+
+    // Original guest tries to come back — no room.
+    const ws4 = track(await connect());
+    sendMsg(ws4, { type: "join", clientId: "guest", room });
+    const err = await waitForType(ws4, "error");
+
+    expect(err.message).toBe("Room is full");
+    expect(rooms.get(room)?.active).toBe(2);
   });
 
   test("attacker without the clientId cannot evict an existing peer", async () => {

@@ -6,10 +6,10 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 - A client **creates** a room (server assigns a 6-char code) with a max client limit
 - Other clients **join** by room code
-- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime and never reassigned
+- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime and never reassigned. New joiners always get the next index, so in long-lived rooms with churn an index can exceed `maxClients`
 - Clients pick their own `clientId`; it stays server-side and acts as the bearer secret for their slot. Reconnecting with the same `clientId` replaces the old connection in the same slot
 - Messages can be **broadcast** to all peers or **sent** to a specific peer index
-- `peer_left` is broadcast immediately on disconnect
+- `peer_left` is broadcast immediately on disconnect, and the cap slot frees right away — a new joiner can take it. The original `clientId` can still reclaim its old index if no one took the spot in the meantime
 - Rooms are cleaned up when empty
 
 ## Run
@@ -77,7 +77,7 @@ ws.onmessage = (event) => {
 
 Joining with the same `clientId` replaces the old connection in the same slot; no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`. Treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
 
-Since the `clientId` stays on the original client, another connection can't claim your slot; they'd just get a fresh index. Persist it locally if you want reconnect to survive a refresh.
+Since the `clientId` stays on the original client, another connection can't *take over* your slot — but they can fill the cap spot it freed when you disconnected. Reconnect is best-effort: if the room re-filled while you were gone you'll get `Room is full`. Persist `clientId` locally if you want reconnect to survive a refresh.
 
 Hosts reconnect like guests: send `join` with the original `clientId` and room code, not another `create`.
 
