@@ -648,9 +648,42 @@ describe("leave endpoint", () => {
       body: leaveBody("solo"),
     });
     expect(res.status).toBe(204);
-    // give the close handler a microtask to settle
-    await new Promise((r) => setTimeout(r, 50));
+    // Cleanup happens synchronously inside the HTTP handler, before the
+    // response is returned — so by the time `fetch` resolves, the room is
+    // already gone. No timer wait needed.
     expect(rooms.has(created.room)).toBe(false);
+  });
+
+  test("concurrent WS close and beacon: peer_left fires exactly once", async () => {
+    const host = track(await connect());
+    sendMsg(host, { type: "create", clientId: "host-secret", maxClients: 4 });
+    const created = await waitForType(host, "created");
+
+    const guest = track(await connect());
+    sendMsg(guest, { type: "join", clientId: "guest-secret", room: created.room });
+    await waitForType(guest, "joined");
+    await waitForType(host, "peer_joined");
+
+    // Race the two teardown paths. Detach guards in both removeFromRoom
+    // (ws.data.index check) and the leave handler (member.ws check) should
+    // make this idempotent regardless of which lands first.
+    let peerLeftCount = 0;
+    const onMsg = (event: MessageEvent) => {
+      const m = JSON.parse(event.data);
+      if (m.type === "peer_left") peerLeftCount++;
+    };
+    host.addEventListener("message", onMsg);
+
+    guest.close();
+    const res = await fetch(`${HTTP_URL}/room/${created.room}/leave`, {
+      method: "POST",
+      body: leaveBody("guest-secret"),
+    });
+    expect(res.status).toBe(204);
+    // Drain any in-flight broadcast — close handler is async on the WS path.
+    await new Promise((r) => setTimeout(r, 100));
+    host.removeEventListener("message", onMsg);
+    expect(peerLeftCount).toBe(1);
   });
 
   test("sets permissive CORS header", async () => {
