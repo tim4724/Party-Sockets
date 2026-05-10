@@ -6,7 +6,7 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 - A client **creates** a room (server assigns a 6-char code) with a max client limit
 - Other clients **join** by room code
-- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime — never reassigned
+- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime and never reassigned
 - Clients pick their own `clientId`; it stays server-side and acts as the bearer secret for their slot. Reconnecting with the same `clientId` replaces the old connection in the same slot
 - Messages can be **broadcast** to all peers or **sent** to a specific peer index
 - `peer_left` is broadcast immediately on disconnect
@@ -28,9 +28,7 @@ A host creates a room; one or more guests join it.
 
 ```js
 const ws = new WebSocket("wss://your-relay.example.com");
-// Treat clientId as a per-slot bearer secret. Generate it locally, never share
-// it with peers, and persist it (e.g. localStorage) if you want reconnects to
-// survive a page reload.
+// Persist clientId in localStorage if you want reconnects to survive a reload.
 const clientId = crypto.randomUUID();
 
 ws.onopen = () => {
@@ -55,7 +53,7 @@ ws.onmessage = (event) => {
 
 ```js
 const ws = new WebSocket("wss://your-relay.example.com");
-const clientId = crypto.randomUUID(); // keep private; presenting the same one re-identifies your slot
+const clientId = crypto.randomUUID(); // presenting the same one re-identifies your slot
 
 ws.onopen = () => {
   ws.send(JSON.stringify({ type: "join", clientId, room: "Mu5h6Z" }));
@@ -77,11 +75,11 @@ ws.onmessage = (event) => {
 
 ### Reconnect
 
-Joining with the same `clientId` replaces the old connection in the same slot — no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`; treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
+Joining with the same `clientId` replaces the old connection in the same slot; no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`. Treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
 
-Because the `clientId` never leaves the original client, another connection can't impersonate you and steal your slot — they'd just be allocated a fresh index. This is also why you should generate the `clientId` with a strong RNG (`crypto.randomUUID()`) and persist it locally if you want reconnect to survive a refresh.
+Since the `clientId` stays on the original client, another connection can't claim your slot; they'd just get a fresh index. Persist it locally if you want reconnect to survive a refresh.
 
-Hosts reconnect the same way as guests: send `join` with the original `clientId` and room code, not another `create`. If the old socket is still active, other peers are not notified — their existing peer state is unchanged. If the peer had already disconnected and peers saw `peer_left`, reclaiming the slot emits `peer_joined` with the same index.
+Hosts reconnect like guests: send `join` with the original `clientId` and room code, not another `create`.
 
 ```js
 ws.onclose = (event) => {
@@ -128,7 +126,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. `clientId` is the per-slot bearer secret — keep it private. |
+| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. Keep `clientId` private; presenting it again reclaims the slot. |
 | `join` | `clientId`, `room` | Join an existing room. Reusing your prior `clientId` reclaims your slot. |
 | `send` | `data`, `to?` | Send to all peers or a specific peer (`to` is a numeric index). |
 
