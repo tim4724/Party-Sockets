@@ -42,6 +42,16 @@ kill_timeout = 300
 
 [deploy]
   strategy = "rolling"
+  # Default is 0.33 (≈5 of 14 simultaneously), which created a wake stampede on
+  # the 2.0.2 deploy: all fra/iad machines lease-locked at once, so user
+  # requests fell back cross-region to whichever distant machine had finished
+  # its turn (SYD). Serial rollout means at most 1 machine is mid-restart;
+  # the other 13 stay proxy-wakeable for incoming traffic throughout.
+  max_unavailable = 1
+  # Default 5m equals kill_timeout exactly, so flyctl bails right when drain
+  # finishes and before restart begins. 10m gives drain (5m max) + restart +
+  # health-check headroom.
+  wait_timeout = "10m"
 
 # Fly auto-scrapes /metrics every 15s and pushes to fly-metrics.net.
 [[metrics]]
