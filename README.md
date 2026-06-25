@@ -1,6 +1,6 @@
 # Party-Sockets
 
-Minimal WebSocket relay server for party games. Clients share rooms and exchange messages — the server just forwards them.
+Minimal WebSocket relay server for party games. Clients share rooms and exchange messages; the server just forwards them.
 
 ## How it works
 
@@ -9,7 +9,8 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 - Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime and never reassigned. New joiners always get the next index, so in long-lived rooms with churn an index can exceed `maxClients`
 - Clients pick their own `clientId`; it stays server-side and acts as the bearer secret for their slot. Reconnecting with the same `clientId` replaces the old connection in the same slot
 - Messages can be **broadcast** to all peers or **sent** to a specific peer index
-- `peer_left` is broadcast immediately on disconnect, and the cap slot frees right away — a new joiner can take it. The original `clientId` can still reclaim its old index if no one took the spot in the meantime
+- The host (slot `0`) can **set** a single retained state snapshot. The server keeps the latest one and replays it to any client on join or reconnect (so a briefly-dropped peer catches up), and also pushes it live to connected peers on each update. The snapshot lives only as long as the room
+- `peer_left` is broadcast immediately on disconnect, and the cap slot frees right away, so a new joiner can take it. The original `clientId` can still reclaim its old index if no one took the spot in the meantime
 - Rooms are cleaned up when empty
 
 ## Run
@@ -44,9 +45,14 @@ ws.onmessage = (event) => {
     case "peer_joined": console.log("peer joined:", msg.index); break;
     case "peer_left":   console.log("peer left:", msg.index); break;
     case "message":     console.log("from", msg.from, msg.data); break;
+    case "state":       console.log("retained state:", msg.data); break;
     case "error":       console.error("server error:", msg.message); break;
   }
 };
+
+// As host you own the retained snapshot. Set it whenever shared state changes;
+// reconnecting or late-joining guests get the latest copy automatically.
+// ws.send(JSON.stringify({ type: "set_state", data: { round: 3, turn: 1 } }));
 ```
 
 ### Guest
@@ -63,12 +69,17 @@ ws.onerror = (event) => console.error("websocket error", event);
 
 ws.onmessage = (event) => {
   const msg = JSON.parse(event.data);
-  // Guests also receive `peer_joined`, `peer_left`, `message`, and `error` —
-  // see the host snippet above for the full event surface.
+  // Guests also receive `peer_joined`, `peer_left`, `message`, and `error`.
+  // See the host snippet above for the full event surface.
   if (msg.type === "joined") {
     // msg.index is your slot; msg.peers is everyone else's slots.
     // Broadcast to all peers. Add `to: <peerIndex>` to target a single peer.
     ws.send(JSON.stringify({ type: "send", data: { move: "left" } }));
+  }
+  if (msg.type === "state") {
+    // The host's latest snapshot. Arrives right after `joined` on reconnect,
+    // and again on every host update; apply it the same way both times.
+    applyState(msg.data);
   }
 };
 ```
@@ -77,13 +88,15 @@ ws.onmessage = (event) => {
 
 Joining with the same `clientId` replaces the old connection in the same slot; no special reconnect message needed. The server closes the previous WebSocket with code `4000` and reason `"replaced"`. Treat that as terminal in your reconnect loop, otherwise the new connection will be torn down by the next replacement.
 
-Since the `clientId` stays on the original client, another connection can't *take over* your slot — but they can fill the cap spot it freed when you disconnected. Reconnect is best-effort: if the room re-filled while you were gone you'll get `Room is full`. Persist `clientId` locally if you want reconnect to survive a refresh.
+Since the `clientId` stays on the original client, another connection can't *take over* your slot, but they can fill the cap spot it freed when you disconnected. Reconnect is best-effort: if the room re-filled while you were gone you'll get `Room is full`. Persist `clientId` locally if you want reconnect to survive a refresh.
 
 Hosts reconnect like guests: send `join` with the original `clientId` and room code, not another `create`.
 
+On a successful (re)join the server replays the host's latest retained snapshot as a `state` message right after `joined`, so a peer that dropped briefly catches up without the host re-sending anything. The snapshot only survives while the room does. If every member disconnects, the room (and its snapshot) is cleaned up.
+
 ```js
 ws.onclose = (event) => {
-  if (event.code === 4000) return; // replaced by a newer connection — don't reconnect
+  if (event.code === 4000) return; // replaced by a newer connection; don't reconnect
   // ...your reconnect logic
 };
 ```
@@ -113,9 +126,16 @@ sequenceDiagram
     G->>S: { type: "send", to: 0, data: "hello" }
     S->>H: { type: "message", from: 1, data: "hello" }
 
-    Note over H,G: Disconnect
+    Note over H,G: Host sets retained state (host only; pushed live to peers)
+    H->>S: { type: "set_state", data: { round: 3 } }
+    S->>G: { type: "state", data: { round: 3 } }
+
+    Note over H,G: Disconnect, then reconnect; server replays the latest snapshot
     G--xS: connection closed
     S->>H: { type: "peer_left", index: 1 }
+    G->>S: { type: "join", clientId: "guest-secret", room: "Mu5h6Z" }
+    S->>G: { type: "joined", room: "Mu5h6Z", index: 1, peers: [0] }
+    S->>G: { type: "state", data: { round: 3 } }
 ```
 
 ## Protocol reference
@@ -129,6 +149,7 @@ All messages are JSON over WebSocket.
 | `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. Keep `clientId` private; presenting it again reclaims the slot. |
 | `join` | `clientId`, `room` | Join an existing room. Reusing your prior `clientId` reclaims your slot. |
 | `send` | `data`, `to?` | Send to all peers or a specific peer (`to` is a numeric index). |
+| `set_state` | `data` | **Host only** (slot `0`). Retain a single state snapshot, replayed to clients on join/reconnect and pushed live to current peers. `data` is required; `null` is retained and replayed as `null` (a cleared-state signal), not removed. Capped at 16 KiB (UTF-8 bytes of the serialized payload). |
 
 ### Server → Client
 
@@ -139,6 +160,7 @@ All messages are JSON over WebSocket.
 | `peer_joined` | `index` | A new peer joined the room |
 | `peer_left` | `index` | A peer disconnected |
 | `message` | `from`, `data` | Relayed message from a peer (`from` is the sender's index) |
+| `state` | `data` | The host's retained snapshot, sent right after `joined` on (re)join, and on each host update. |
 | `error` | `message` | Error description |
 
 ## Docker
@@ -165,24 +187,24 @@ All HTTP endpoints include `Access-Control-Allow-Origin: *`.
 
 Liveness probe.
 
-- **200** — `{ status: "ok" }`
+- **200**: `{ status: "ok" }`
 
 ### `GET /room/:code`
 
 Check whether a room exists on this server. The handling machine's ID is returned in the `X-Instance-Id` response header.
 
-- **200** — room found: `{ clients: number, maxClients: number, origin: string }`
-- **404** — room not found: `{ error: "Room not found" }`
+- **200**, room found: `{ clients: number, maxClients: number, origin: string }`
+- **404**, room not found: `{ error: "Room not found" }`
 
 ### `GET /metrics`
 
 Prometheus exposition format. Exposes:
 
-- `party_sockets_clients` / `party_sockets_rooms` — live gauges
-- `party_sockets_clients_by_origin` / `party_sockets_rooms_by_origin` — same, labeled by origin
-- `party_sockets_connections_total` / `party_sockets_rooms_created_total` — since-boot counters per origin
-- `party_sockets_origins_tracked` — origins currently tracked (size of internal map; capped at 500 with LRU eviction)
-- `process_resident_memory_bytes`, `process_heap_used_bytes`, `process_uptime_seconds` — runtime health
+- `party_sockets_clients` / `party_sockets_rooms`: live gauges
+- `party_sockets_clients_by_origin` / `party_sockets_rooms_by_origin`: same, labeled by origin
+- `party_sockets_connections_total` / `party_sockets_rooms_created_total`: since-boot counters per origin
+- `party_sockets_origins_tracked`: origins currently tracked (size of internal map; capped at 500 with LRU eviction)
+- `process_resident_memory_bytes`, `process_heap_used_bytes`, `process_uptime_seconds`: runtime health
 
 All series are labeled with `instance`, `region`, `version`.
 
@@ -229,9 +251,9 @@ new WebSocket("wss://your-relay.fly.dev/Mu5h6Z?instance=00bb33ff");
 new WebSocket("wss://your-relay.fly.dev/Mu5h6Z");
 ```
 
-Single-instance deployments can omit both — they're no-ops when no peers exist. Redirects use `fly-replay` headers; swap the helpers in `server.ts` for other platforms.
+Single-instance deployments can omit both; they're no-ops when no peers exist. Redirects use `fly-replay` headers; swap the helpers in `server.ts` for other platforms.
 
-Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring — clients get a clean "Room not found" on join instead of a connection failure.
+Stale `?instance=` values (machine replaced or destroyed) fall through to local handling rather than erroring; clients get a clean "Room not found" on join instead of a connection failure.
 
 ### Room code region encoding
 

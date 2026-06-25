@@ -8,7 +8,8 @@ import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 type ClientMessage =
   | { type: "create"; clientId: string; maxClients: number }
   | { type: "join"; clientId: string; room: string }
-  | { type: "send"; to?: number; data: unknown };
+  | { type: "send"; to?: number; data: unknown }
+  | { type: "set_state"; data: unknown };
 
 type ServerMessage =
   | { type: "created"; room: string; instance: string; region: string; index: number }
@@ -16,6 +17,7 @@ type ServerMessage =
   | { type: "peer_joined"; index: number }
   | { type: "peer_left"; index: number }
   | { type: "message"; from: number; data: unknown }
+  | { type: "state"; data: unknown }
   | { type: "error"; message: string };
 
 interface ClientData {
@@ -40,6 +42,10 @@ interface Room {
   origin: string;
   members: Member[];
   active: number;
+  // Last snapshot set by the host (index 0). Retained for the room's lifetime
+  // and replayed to any client on (re)join, so a briefly-disconnected peer
+  // catches up. Undefined until the host first sets it; dies with the room.
+  state?: unknown;
 }
 
 // --- Constants ---
@@ -71,6 +77,11 @@ const MAX_ORIGIN_SERIES = 100;
 // than MAX_ORIGIN_SERIES so the overflow `__other__` bucket still has
 // signal beyond the visible window. Eviction is LRU on increment.
 const MAX_ORIGIN_COUNTERS = 500;
+
+// Cap the retained per-room host snapshot. One blob is held per live room for
+// its lifetime, so this bounds the worst-case memory a client can park on the
+// server. Measured as UTF-8 bytes of the JSON-serialized payload.
+const MAX_STATE_BYTES = 16 * 1024;
 
 // --- State ---
 
@@ -380,6 +391,7 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
 
     const peers = peerIndices(room, existingIndex);
     send(ws, { type: "joined", room: msg.room, index: existingIndex, peers });
+    sendRetainedState(ws, room);
     if (!wasActive) broadcast(msg.room, { type: "peer_joined", index: existingIndex }, ws);
     return;
   }
@@ -402,7 +414,15 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
 
   const peers = peerIndices(room, index);
   send(ws, { type: "joined", room: msg.room, index, peers });
+  sendRetainedState(ws, room);
   broadcast(msg.room, { type: "peer_joined", index }, ws);
+}
+
+// Replay the host's retained snapshot to a single (re)joining client, right
+// after its `joined`. Same `state` message shape the host's live updates use,
+// so the client has one handler for both. No-op until the host has set state.
+function sendRetainedState(ws: ServerWebSocket<ClientData>, room: Room) {
+  if (room.state !== undefined) send(ws, { type: "state", data: room.state });
 }
 
 function peerIndices(room: Room, selfIndex: number): number[] {
@@ -436,6 +456,41 @@ function handleSend(ws: ServerWebSocket<ClientData>, msg: { to?: number; data: u
   } else {
     broadcast(roomCode, { type: "message", from: index, data: msg.data }, ws);
   }
+}
+
+function handleSetState(ws: ServerWebSocket<ClientData>, msg: { data: unknown }) {
+  const { index, room: roomCode } = ws.data;
+  if (index === undefined || !roomCode) {
+    return send(ws, { type: "error", message: "Not in a room" });
+  }
+
+  const room = rooms.get(roomCode);
+  if (!room) {
+    return send(ws, { type: "error", message: "Room not found" });
+  }
+
+  // Host-authoritative: index 0 is the creator's slot and is never reassigned,
+  // so "only the host owns the snapshot" is a stable rule for the room's life.
+  if (index !== 0) {
+    return send(ws, { type: "error", message: "Only the host can set state" });
+  }
+
+  // Reject undefined outright (it has no JSON form and JSON.stringify returns
+  // undefined for it). `null` is allowed; it's retained and replayed as null
+  // (a "cleared" signal to peers), not removed from the room.
+  if (msg.data === undefined) {
+    return send(ws, { type: "error", message: "State data is required" });
+  }
+  // Measure UTF-8 bytes, not String.length (UTF-16 code units): a multi-byte
+  // payload (CJK, emoji) would otherwise slip ~3x past the cap on the wire.
+  if (Buffer.byteLength(JSON.stringify(msg.data)) > MAX_STATE_BYTES) {
+    return send(ws, { type: "error", message: "State too large" });
+  }
+
+  room.state = msg.data;
+  // Live push to current peers (sender excluded — it already has the value).
+  // Reconnecting peers get the retained copy via sendRetainedState on join.
+  broadcast(roomCode, { type: "state", data: msg.data }, ws);
 }
 
 // --- Metrics ---
@@ -679,6 +734,8 @@ const server = Bun.serve({
           return handleJoin(ws, msg);
         case "send":
           return handleSend(ws, msg);
+        case "set_state":
+          return handleSetState(ws, msg);
         default:
           return send(ws, { type: "error", message: "Unknown message type" });
       }

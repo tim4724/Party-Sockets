@@ -468,6 +468,205 @@ describe("reconnect", () => {
   });
 });
 
+describe("retained state", () => {
+  test("host set_state replays to a reconnecting client", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    sendMsg(ws1, { type: "set_state", data: { round: 3, turn: "guest" } });
+
+    // Guest drops and the host keeps the room alive.
+    const peerLeftPromise = waitForType(ws1, "peer_left");
+    ws2.close();
+    await peerLeftPromise;
+
+    // Reconnect: the retained snapshot arrives right after `joined`.
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "guest", room });
+    await waitForType(ws3, "joined");
+    const state = await waitForType(ws3, "state");
+
+    expect(state.data).toEqual({ round: 3, turn: "guest" });
+  });
+
+  test("host set_state replays to a fresh late joiner", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 3 });
+    const { room } = await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state", data: "lobby" });
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+    const state = await waitForType(ws2, "state");
+
+    expect(state.data).toBe("lobby");
+  });
+
+  test("host set_state pushes a live state update to current peers, not the sender", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    // The host must not receive an echo of its own snapshot.
+    let hostGotState = false;
+    ws1.addEventListener("message", (e) => {
+      if (JSON.parse(e.data).type === "state") hostGotState = true;
+    });
+
+    const statePromise = waitForType(ws2, "state");
+    sendMsg(ws1, { type: "set_state", data: { score: 10 } });
+    const state = await statePromise;
+
+    expect(state.data).toEqual({ score: 10 });
+    await new Promise((r) => setTimeout(r, 50));
+    expect(hostGotState).toBe(false);
+  });
+
+  test("host reconnect replays its own retained snapshot", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state", data: { round: 1 } });
+
+    // A guest keeps the room (and its snapshot) alive across the host's drop.
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const peerLeftPromise = waitForType(ws2, "peer_left");
+    ws1.close();
+    await peerLeftPromise;
+
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "host", room });
+    const joinMsg = await waitForType(ws3, "joined");
+    const state = await waitForType(ws3, "state");
+
+    expect(joinMsg.index).toBe(0);
+    expect(state.data).toEqual({ round: 1 });
+  });
+
+  test("latest snapshot wins on reconnect", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state", data: { v: 1 } });
+    sendMsg(ws1, { type: "set_state", data: { v: 2 } });
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+    const state = await waitForType(ws2, "state");
+
+    expect(state.data).toEqual({ v: 2 });
+  });
+
+  test("non-host peer cannot set state", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    sendMsg(ws2, { type: "set_state", data: "nope" });
+    const err = await waitForType(ws2, "error");
+
+    expect(err.message).toBe("Only the host can set state");
+    expect(rooms.get(room)?.state).toBeUndefined();
+  });
+
+  test("rejects set_state when not in a room", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "set_state", data: "x" });
+    const err = await waitForType(ws, "error");
+
+    expect(err.message).toContain("Not in a room");
+  });
+
+  test("rejects set_state with no data", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state" });
+    const err = await waitForType(ws1, "error");
+
+    expect(err.message).toContain("required");
+  });
+
+  test("rejects a snapshot over the size cap", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state", data: "x".repeat(17 * 1024) });
+    const err = await waitForType(ws1, "error");
+
+    expect(err.message).toBe("State too large");
+  });
+
+  test("size cap counts UTF-8 bytes, not UTF-16 code units", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    await waitForType(ws1, "created");
+
+    // 6000 × "中" is ~6002 code units (under the 16 KiB code-unit count) but
+    // ~18 KB in UTF-8 — must be rejected by the byte-measured cap.
+    sendMsg(ws1, { type: "set_state", data: "中".repeat(6000) });
+    const err = await waitForType(ws1, "error");
+
+    expect(err.message).toBe("State too large");
+  });
+
+  test("null is retained and replayed as null (cleared-state signal)", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    sendMsg(ws1, { type: "set_state", data: { live: true } });
+    sendMsg(ws1, { type: "set_state", data: null });
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+    const state = await waitForType(ws2, "state");
+
+    expect(state.data).toBeNull();
+  });
+
+  test("no state message on join before the host sets anything", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    let gotState = false;
+    ws2.addEventListener("message", (e) => {
+      if (JSON.parse(e.data).type === "state") gotState = true;
+    });
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(gotState).toBe(false);
+  });
+});
+
 describe("graceful drain", () => {
   afterEach(() => _resetDrainForTest());
 
