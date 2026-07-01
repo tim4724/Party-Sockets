@@ -136,6 +136,119 @@ describe("room creation", () => {
     expect(msg.room).toHaveLength(6);
     expect(msg.room).not.toBe("Mu5h6Z");
   });
+
+  test("created response fills the controller url template", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/{room}?instance={instance}",
+    });
+    const msg = await waitForType(ws, "created");
+
+    // {room} -> the assigned code, {instance} -> this machine's id.
+    expect(msg.url).toBe(`https://abc.com/${msg.room}?instance=test-machine`);
+  });
+
+  test("created response accepts a static url with no placeholders", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/controller",
+    });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg.url).toBe("https://abc.com/controller");
+  });
+
+  test("created response omits url when none is provided", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4 });
+    const msg = await waitForType(ws, "created");
+
+    expect(msg).not.toHaveProperty("url");
+  });
+
+  test("rejects a non-https url", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "http://abc.com/{room}",
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("https");
+  });
+
+  test("rejects a url with an unknown placeholder", async () => {
+    // {region} is deliberately not a supported placeholder.
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/{region}",
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("placeholder");
+  });
+
+  test("rejects an oversized url", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/" + "a".repeat(600),
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("too large");
+  });
+
+  test("measures the url cap in utf-8 bytes, not code units", async () => {
+    // 216 UTF-16 code units but 616 UTF-8 bytes: a .length check would wrongly
+    // accept this, so it guards that Buffer.byteLength is the measure.
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/" + "あ".repeat(200),
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("too large");
+  });
+
+  test("rejects a url with an unclosed placeholder brace", async () => {
+    // Missing the closing brace: never substituted, would ship a literal
+    // "{room" to clients instead of the code.
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/{room",
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("brace");
+  });
+
+  test("rejects a url containing control characters", async () => {
+    // The URL parser silently strips an embedded NUL, so it must be rejected
+    // up front or it survives verbatim into the emitted URL.
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 4,
+      url: "https://abc.com/\u0000{room}",
+    });
+    const msg = await waitForType(ws, "error");
+
+    expect(msg.message).toContain("control");
+  });
+
+  test("rejects non-https schemes", async () => {
+    for (const url of ["javascript:alert(1)", "file:///etc/passwd"]) {
+      const ws = track(await connect());
+      sendMsg(ws, { type: "create", clientId: "aaa", maxClients: 4, url });
+      const msg = await waitForType(ws, "error");
+      expect(msg.message).toContain("https");
+    }
+  });
 });
 
 describe("joining", () => {
@@ -155,6 +268,45 @@ describe("joining", () => {
     expect(joinMsg.index).toBe(1);
     expect(joinMsg.peers).toEqual([0]);
     expect(peerMsg.index).toBe(1);
+  });
+
+  test("joined response carries the resolved controller url", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, {
+      type: "create", clientId: "host", maxClients: 4,
+      url: "https://abc.com/{room}?instance={instance}",
+    });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    const joinMsg = await waitForType(ws2, "joined");
+
+    // The guest is the controller: it only has the code, so the relay hands it
+    // the loadable url filled with that code and the holding machine's id.
+    expect(joinMsg.url).toBe(`https://abc.com/${room}?instance=test-machine`);
+  });
+
+  test("reclaim path also carries the resolved controller url", async () => {
+    // Reconnect (same clientId) is the pinned-reconnect scenario the url exists
+    // for, and it goes through a different `joined` send than a fresh join.
+    const ws1 = track(await connect());
+    sendMsg(ws1, {
+      type: "create", clientId: "host", maxClients: 2,
+      url: "https://abc.com/{room}?instance={instance}",
+    });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    // Rejoin with the same clientId -> reclaim branch, replacing the old socket.
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "guest", room });
+    const rejoined = await waitForType(ws3, "joined");
+
+    expect(rejoined.url).toBe(`https://abc.com/${room}?instance=test-machine`);
   });
 
   test("rejects join to non-existent room", async () => {
@@ -759,6 +911,21 @@ describe("room info endpoint", () => {
     expect(res.headers.get("x-instance-id")).toBe("test-machine");
     const body = await res.json();
     expect(body).toEqual({ clients: 1, maxClients: 8, origin: "unknown" });
+  });
+
+  test("includes the filled controller url when the host set one", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, {
+      type: "create", clientId: "aaa", maxClients: 8,
+      url: "https://abc.com/{room}?instance={instance}",
+    });
+    const created = await waitForType(ws, "created");
+
+    const res = await fetch(`${HTTP_URL}/room/${created.room}`);
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    // The instance is filled with whichever machine served the lookup.
+    expect(body.url).toBe(`https://abc.com/${created.room}?instance=test-machine`);
   });
 
   test("sets permissive CORS header", async () => {
