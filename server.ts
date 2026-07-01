@@ -6,14 +6,14 @@ import { encodeRegion, decodeRegion, REGION_BITS } from "./regions";
 // --- Types ---
 
 type ClientMessage =
-  | { type: "create"; clientId: string; maxClients: number }
+  | { type: "create"; clientId: string; maxClients: number; url?: string }
   | { type: "join"; clientId: string; room: string }
   | { type: "send"; to?: number; data: unknown }
   | { type: "set_state"; data: unknown };
 
 type ServerMessage =
-  | { type: "created"; room: string; instance: string; region: string; index: number }
-  | { type: "joined"; room: string; index: number; peers: number[] }
+  | { type: "created"; room: string; instance: string; region: string; index: number; url?: string }
+  | { type: "joined"; room: string; index: number; peers: number[]; url?: string }
   | { type: "peer_joined"; index: number }
   | { type: "peer_left"; index: number }
   | { type: "message"; from: number; data: unknown }
@@ -46,6 +46,12 @@ interface Room {
   // and replayed to any client on (re)join, so a briefly-disconnected peer
   // catches up. Undefined until the host first sets it; dies with the room.
   state?: unknown;
+  // Host-declared controller URL, resolved once at create: the template's
+  // {room}/{instance} placeholders are filled with the code and this machine's
+  // id (both fixed for the room's life), then returned verbatim in
+  // `created`/`joined`/`GET /room/:code` so a client that only has the code
+  // learns which page to load. Undefined when the host declared no url.
+  url?: string;
 }
 
 // --- Constants ---
@@ -82,6 +88,18 @@ const MAX_ORIGIN_COUNTERS = 500;
 // its lifetime, so this bounds the worst-case memory a client can park on the
 // server. Measured as UTF-8 bytes of the JSON-serialized payload.
 const MAX_STATE_BYTES = 16 * 1024;
+
+// Cap the host-declared controller URL template. It's echoed to every client
+// that resolves the room, so bound what a host can park on the server. A
+// controller base plus a few query params is well under this.
+const MAX_URL_BYTES = 512;
+
+// Placeholders the relay substitutes when returning a room's controller URL.
+// `{room}` -> code, `{instance}` -> holding machine id. Region is intentionally
+// absent: the code already self-encodes it and pins use `instance`, so it would
+// be a placeholder that does nothing. Any other `{token}` is a host typo and is
+// rejected at create rather than shipped literally to clients.
+const URL_PLACEHOLDERS = new Set(["room", "instance"]);
 
 // --- State ---
 
@@ -309,7 +327,53 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
 
 // --- Message handlers ---
 
-function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number }) {
+// Substitute the known placeholders in a host's controller URL template. Each
+// value is percent-encoded so an unusual INSTANCE_ID can't break out of the URL
+// structure. In practice the values are URL-unreserved (base58 code, hex
+// machine id), so this is a safety net, not a transform.
+function fillUrlTemplate(template: string, code: string, instance: string): string {
+  return template
+    .replaceAll("{room}", encodeURIComponent(code))
+    .replaceAll("{instance}", encodeURIComponent(instance));
+}
+
+// Validate a host-declared controller URL template. Returns an error string to
+// reject the `create` with, or null if the template is acceptable. Placeholder
+// names are checked on the raw string; the template is then filled with dummy
+// values and parsed, since the WHATWG URL parser would otherwise mangle the
+// literal `{}` tokens. Only absolute https URLs are allowed, since the URL is
+// loaded by a native shell, so `javascript:`/`file:`/custom schemes are refused.
+function validateUrlTemplate(url: string): string | null {
+  if (typeof url !== "string") return "url must be a string";
+  if (Buffer.byteLength(url) > MAX_URL_BYTES) return "url too large";
+  // Reject spaces and C0/DEL control chars (tab, newline, NUL, ...). The WHATWG
+  // parser below silently strips these, so without this guard they'd pass
+  // validation but survive verbatim into the raw string we emit. A native
+  // consumer that treats an embedded NUL as a terminator would then load a
+  // different URL than the one we validated.
+  if (/[\u0000-\u0020\u007f]/.test(url)) {
+    return "url must not contain spaces or control characters";
+  }
+  for (const match of url.matchAll(/\{([^}]*)\}/g)) {
+    if (!URL_PLACEHOLDERS.has(match[1]!)) return `Unknown url placeholder: {${match[1]}}`;
+  }
+  // Every brace must belong to a recognized {room}/{instance} token. A stray or
+  // unclosed brace (e.g. `{room`) is never substituted and would ship a literal
+  // `{room` to clients, so reject it rather than emit a broken URL.
+  if (/[{}]/.test(url.replaceAll("{room}", "").replaceAll("{instance}", ""))) {
+    return "url has an unmatched placeholder brace";
+  }
+  let parsed: URL;
+  try {
+    parsed = new URL(fillUrlTemplate(url, "room", "instance"));
+  } catch {
+    return "url is not a valid URL";
+  }
+  if (parsed.protocol !== "https:") return "url must be an https URL";
+  return null;
+}
+
+function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; maxClients: number; url?: string }) {
   if (draining) {
     return send(ws, { type: "error", message: "Server draining" });
   }
@@ -322,6 +386,10 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   if (!msg.maxClients || typeof msg.maxClients !== "number" || msg.maxClients < 1) {
     return send(ws, { type: "error", message: "maxClients must be a positive number" });
   }
+  if (msg.url !== undefined) {
+    const urlError = validateUrlTemplate(msg.url);
+    if (urlError) return send(ws, { type: "error", message: urlError });
+  }
 
   const code = generateRoomCode();
   const origin = ws.data.origin || "unknown";
@@ -330,6 +398,10 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
     origin,
     members: [{ clientId: msg.clientId, ws }],
     active: 1,
+    // Resolve the controller URL once. {room} and {instance} are both fixed for
+    // the room's life (the room only ever lives on this machine), so there is
+    // nothing to recompute on later joins or /room/:code lookups.
+    url: msg.url === undefined ? undefined : fillUrlTemplate(msg.url, code, INSTANCE_ID),
   };
   rooms.set(code, room);
   ws.subscribe(topicForRoom(code));
@@ -339,7 +411,7 @@ function handleCreate(ws: ServerWebSocket<ClientData>, msg: { clientId: string; 
   ws.data.index = 0;
 
   incrementStat(origin, "rooms");
-  send(ws, { type: "created", room: code, instance: INSTANCE_ID, region: REGION, index: 0 });
+  send(ws, { type: "created", room: code, instance: INSTANCE_ID, region: REGION, index: 0, url: room.url });
 }
 
 function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; room: string }) {
@@ -390,7 +462,7 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
     ws.data.index = existingIndex;
 
     const peers = peerIndices(room, existingIndex);
-    send(ws, { type: "joined", room: msg.room, index: existingIndex, peers });
+    send(ws, { type: "joined", room: msg.room, index: existingIndex, peers, url: room.url });
     sendRetainedState(ws, room);
     if (!wasActive) broadcast(msg.room, { type: "peer_joined", index: existingIndex }, ws);
     return;
@@ -413,7 +485,7 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
   ws.data.index = index;
 
   const peers = peerIndices(room, index);
-  send(ws, { type: "joined", room: msg.room, index, peers });
+  send(ws, { type: "joined", room: msg.room, index, peers, url: room.url });
   sendRetainedState(ws, room);
   broadcast(msg.room, { type: "peer_joined", index }, ws);
 }
@@ -692,6 +764,7 @@ const server = Bun.serve({
         clients: room.active,
         maxClients: room.maxClients,
         origin: room.origin,
+        url: room.url,
       }), { headers });
     }
     const origin = req.headers.get("origin") || undefined;

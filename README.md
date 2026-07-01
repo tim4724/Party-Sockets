@@ -4,14 +4,12 @@ Minimal WebSocket relay server for party games. Clients share rooms and exchange
 
 ## How it works
 
-- A client **creates** a room (server assigns a 6-char code) with a max client limit
-- Other clients **join** by room code
-- Each member is assigned a numeric `index` (slot id). Indices are stable for the room's lifetime and never reassigned. New joiners always get the next index, so in long-lived rooms with churn an index can exceed `maxClients`
-- Clients pick their own `clientId`; it stays server-side and acts as the bearer secret for their slot. Reconnecting with the same `clientId` replaces the old connection in the same slot
-- Messages can be **broadcast** to all peers or **sent** to a specific peer index
-- The host (slot `0`) can **set** a single retained state snapshot. The server keeps the latest one and replays it to any client on join or reconnect (so a briefly-dropped peer catches up), and also pushes it live to connected peers on each update. The snapshot lives only as long as the room
-- `peer_left` is broadcast immediately on disconnect, and the cap slot frees right away, so a new joiner can take it. The original `clientId` can still reclaim its old index if no one took the spot in the meantime
-- Rooms are cleaned up when empty
+- A client **creates** a room and gets a 6-char code plus a max client limit. Others **join** with the code.
+- Each member gets a stable numeric `index` (slot id): `0` for the host, then `1`, `2`, and so on. Indices are never reassigned.
+- Clients pick their own `clientId`. It stays server-side as the secret for their slot, so reconnecting with the same `clientId` resumes that slot.
+- Messages are **broadcast** to every peer or **sent** to one peer by index.
+- The host (slot `0`) can retain one **state** snapshot. The server replays it to any client on join or reconnect and pushes it live on every update. It lasts only as long as the room.
+- Rooms are cleaned up when empty.
 
 ## Run
 
@@ -126,11 +124,11 @@ sequenceDiagram
     G->>S: { type: "send", to: 0, data: "hello" }
     S->>H: { type: "message", from: 1, data: "hello" }
 
-    Note over H,G: Host sets retained state (host only; pushed live to peers)
+    Note over H,G: Host sets retained state (host only, pushed live to peers)
     H->>S: { type: "set_state", data: { round: 3 } }
     S->>G: { type: "state", data: { round: 3 } }
 
-    Note over H,G: Disconnect, then reconnect; server replays the latest snapshot
+    Note over H,G: Disconnect, then reconnect. Server replays the latest snapshot
     G--xS: connection closed
     S->>H: { type: "peer_left", index: 1 }
     G->>S: { type: "join", clientId: "guest-secret", room: "Mu5h6Z" }
@@ -146,7 +144,7 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `create` | `clientId`, `maxClients` | Create a new room. Server assigns the 6-char code. Keep `clientId` private; presenting it again reclaims the slot. |
+| `create` | `clientId`, `maxClients`, `url?` | Create a new room. Server assigns the 6-char code. Keep `clientId` private; presenting it again reclaims the slot. `url` is an optional controller-URL template, see [Controller URL](#controller-url). |
 | `join` | `clientId`, `room` | Join an existing room. Reusing your prior `clientId` reclaims your slot. |
 | `send` | `data`, `to?` | Send to all peers or a specific peer (`to` is a numeric index). |
 | `set_state` | `data` | **Host only** (slot `0`). Retain a single state snapshot, replayed to clients on join/reconnect and pushed live to current peers. `data` is required; `null` is retained and replayed as `null` (a cleared-state signal), not removed. Capped at 16 KiB (UTF-8 bytes of the serialized payload). |
@@ -155,13 +153,27 @@ All messages are JSON over WebSocket.
 
 | type | fields | description |
 |------|--------|-------------|
-| `created` | `room`, `instance`, `region`, `index` | Room created. `index` is your slot id (always `0` for the creator). `instance` identifies the holding machine for cross-instance routing; `region` is a label. |
-| `joined` | `room`, `index`, `peers[]` | Joined room. `index` is your slot id; `peers` lists the other present slot ids. |
+| `created` | `room`, `instance`, `region`, `index`, `url?` | Room created. `index` is your slot id (always `0` for the creator). `instance` identifies the holding machine for cross-instance routing; `region` is a label. `url` appears only if the host passed a template on `create`, filled in for this room. |
+| `joined` | `room`, `index`, `peers[]`, `url?` | Joined room. `index` is your slot id; `peers` lists the other present slot ids. `url` is the resolved controller URL, present only if the host set a template. |
 | `peer_joined` | `index` | A new peer joined the room |
 | `peer_left` | `index` | A peer disconnected |
 | `message` | `from`, `data` | Relayed message from a peer (`from` is the sender's index) |
 | `state` | `data` | The host's retained snapshot, sent right after `joined` on (re)join, and on each host update. |
 | `error` | `message` | Error description |
+
+## Controller URL
+
+A generic controller (say a native app where the player types the room code) needs to know *what to load* for a room. The host declares a `url` template on `create`, and the relay returns it resolved in `created`, every `joined`, and `GET /room/:code`, so a client holding only the code can find the page:
+
+```js
+ws.send(JSON.stringify({
+  type: "create", clientId, maxClients: 4,
+  url: "https://play.example.com/{room}?instance={instance}",
+}));
+// resolves to e.g. "https://play.example.com/Mu5h6Z?instance=00bb33ff"
+```
+
+`{room}` fills in the code and `{instance}` the holding machine (for pinned reconnects); the host cannot supply these itself, since neither exists until create. The template must be an absolute `https:` URL, at most 512 bytes, free of spaces and control characters, with balanced braces and no other placeholders. Keep `{instance}` in the path or query, not the host, since it is empty on non-Fly single-instance deployments.
 
 ## Docker
 
@@ -193,8 +205,10 @@ Liveness probe.
 
 Check whether a room exists on this server. The handling machine's ID is returned in the `X-Instance-Id` response header.
 
-- **200**, room found: `{ clients: number, maxClients: number, origin: string }`
+- **200**, room found: `{ clients: number, maxClients: number, origin: string, url?: string }`
 - **404**, room not found: `{ error: "Room not found" }`
+
+`url` is present only when the host declared a controller-URL template on `create`; it comes back with `{room}`/`{instance}` filled in for this room. See [Controller URL](#controller-url).
 
 ### `GET /metrics`
 
