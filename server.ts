@@ -9,7 +9,8 @@ type ClientMessage =
   | { type: "create"; clientId: string; maxClients: number; url?: string }
   | { type: "join"; clientId: string; room: string }
   | { type: "send"; to?: number; data: unknown }
-  | { type: "set_state"; data: unknown };
+  | { type: "set_state"; data: unknown }
+  | { type: "close_room" };
 
 type ServerMessage =
   | { type: "created"; room: string; instance: string; region: string; index: number; url?: string }
@@ -52,6 +53,12 @@ interface Room {
   // `created`/`joined`/`GET /room/:code` so a client that only has the code
   // learns which page to load. Undefined when the host declared no url.
   url?: string;
+  // Pending hostless-room teardown. Armed when slot 0's socket drops while
+  // other members remain, cancelled when the host reclaims the slot. Without
+  // it a single lingering member keeps a hostless room alive forever: active
+  // never hits 0, GET /room/:code keeps returning 200, and stale rejoin links
+  // stay valid for a room nobody is running.
+  hostGraceTimer?: ReturnType<typeof setTimeout>;
 }
 
 // --- Constants ---
@@ -88,6 +95,20 @@ const MAX_ORIGIN_COUNTERS = 500;
 // its lifetime, so this bounds the worst-case memory a client can park on the
 // server. Measured as UTF-8 bytes of the JSON-serialized payload.
 const MAX_STATE_BYTES = 16 * 1024;
+
+// How long a room may sit hostless before it's torn down. Slot 0 stays
+// reserved for the host's clientId, so a crashed or rebooted host device can
+// come back and reclaim it inside this window. Long enough to ride out a TV
+// reboot or router blip; short enough that a ghost lobby (host gone for good,
+// one phone still parked in it) doesn't stay joinable all night.
+const HOST_DISCONNECT_GRACE_MS = 2 * 60 * 1000;
+// Mutable mirror so tests can shrink the window; production never touches it.
+let hostGraceMs = HOST_DISCONNECT_GRACE_MS;
+
+// Close code for room teardown (host sent close_room, or the host-disconnect
+// grace expired). 4000 means "this socket was replaced, the room lives on";
+// 4001 means "the room itself is gone" — reconnect logic must not retry.
+const CLOSE_CODE_ROOM_CLOSED = 4001;
 
 // Cap the host-declared controller URL template. It's echoed to every client
 // that resolves the room, so bound what a host can park on the server. A
@@ -317,12 +338,48 @@ function removeFromRoom(ws: ServerWebSocket<ClientData>) {
   ws.data.index = undefined;
 
   if (room.active === 0) {
+    clearTimeout(room.hostGraceTimer);
     rooms.delete(roomCode);
   } else {
     // Closing ws is auto-unsubscribed by Bun, so server.publish naturally
     // skips it. No explicit unsubscribe needed.
     broadcast(roomCode, { type: "peer_left", index });
+    if (index === 0) startHostGrace(roomCode, room);
   }
+}
+
+// Tear down a room for everyone: drop it from the map (GET /room/:code turns
+// 404 immediately, killing stale rejoin links) and close every connected
+// member socket with the room-closed code. The close frame is the only
+// notification — it reaches each member exactly once, and clients with
+// auto-reconnect need the close code anyway to know not to retry.
+function closeRoom(code: string, room: Room) {
+  clearTimeout(room.hostGraceTimer);
+  rooms.delete(code);
+  for (const member of room.members) {
+    const memberWs = member.ws;
+    if (!memberWs) continue;
+    member.ws = undefined;
+    // Detach before close, matching the reconnect-replace path: the socket's
+    // close handler then has nothing to tear down.
+    memberWs.data.room = undefined;
+    memberWs.data.clientId = undefined;
+    memberWs.data.index = undefined;
+    memberWs.close(CLOSE_CODE_ROOM_CLOSED, "room closed");
+  }
+}
+
+function startHostGrace(code: string, room: Room) {
+  clearTimeout(room.hostGraceTimer);
+  const timer = setTimeout(() => {
+    // Reclaim cancels the timer, so a firing timer should always see a vacant
+    // slot 0 — re-check both anyway in case the code was reissued to a new room.
+    if (rooms.get(code) === room && !room.members[0]?.ws) closeRoom(code, room);
+  }, hostGraceMs);
+  // A pending teardown must not hold the process open; the members' live
+  // sockets keep it alive regardless.
+  timer.unref();
+  room.hostGraceTimer = timer;
 }
 
 // --- Message handlers ---
@@ -453,6 +510,8 @@ function handleJoin(ws: ServerWebSocket<ClientData>, msg: { clientId: string; ro
         return send(ws, { type: "error", message: "Room is full" });
       }
       room.active++;
+      // Host made it back inside the grace window: the room lives on.
+      if (existingIndex === 0) clearTimeout(room.hostGraceTimer);
     }
 
     existing.ws = ws;
@@ -563,6 +622,27 @@ function handleSetState(ws: ServerWebSocket<ClientData>, msg: { data: unknown })
   // Live push to current peers (sender excluded — it already has the value).
   // Reconnecting peers get the retained copy via sendRetainedState on join.
   broadcast(roomCode, { type: "state", data: msg.data }, ws);
+}
+
+// Host-initiated teardown. No ack message: the sender's own 4001 close frame
+// is the confirmation, consistent with send/set_state being silent on success.
+function handleCloseRoom(ws: ServerWebSocket<ClientData>) {
+  const { index, room: roomCode } = ws.data;
+  if (index === undefined || !roomCode) {
+    return send(ws, { type: "error", message: "Not in a room" });
+  }
+
+  const room = rooms.get(roomCode);
+  if (!room) {
+    return send(ws, { type: "error", message: "Room not found" });
+  }
+
+  // Same stable rule as set_state: slot 0 is the creator's, forever.
+  if (index !== 0) {
+    return send(ws, { type: "error", message: "Only the host can close the room" });
+  }
+
+  closeRoom(roomCode, room);
 }
 
 // --- Metrics ---
@@ -809,6 +889,8 @@ const server = Bun.serve({
           return handleSend(ws, msg);
         case "set_state":
           return handleSetState(ws, msg);
+        case "close_room":
+          return handleCloseRoom(ws);
         default:
           return send(ws, { type: "error", message: "Unknown message type" });
       }
@@ -847,7 +929,13 @@ function _resetDrainForTest() {
   draining = false;
 }
 
+// Shrink (or restore, when called with no argument) the host-disconnect grace
+// window so tests don't wait out the real one.
+function _setHostGraceForTest(ms?: number) {
+  hostGraceMs = ms ?? HOST_DISCONNECT_GRACE_MS;
+}
+
 process.on("SIGTERM", () => { drain(); });
 process.on("SIGINT", () => { drain(); });
 
-export { server, rooms, drain, _resetDrainForTest };
+export { server, rooms, drain, _resetDrainForTest, _setHostGraceForTest };

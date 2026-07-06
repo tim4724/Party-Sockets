@@ -17,7 +17,7 @@ mock.module("node:dns/promises", () => ({
 process.env.FLY_REGION = "fra";
 process.env.FLY_APP_NAME = "test-app";
 process.env.FLY_MACHINE_ID = "test-machine";
-const { server, rooms, drain, _resetDrainForTest, tryDecodeRoomCode, findRoomOnPeers } = await import("./server");
+const { server, rooms, drain, _resetDrainForTest, _setHostGraceForTest, tryDecodeRoomCode, findRoomOnPeers } = await import("./server");
 import * as base58 from "./base58";
 import { encodeRegion, decodeRegion, REGIONS } from "./regions";
 
@@ -816,6 +816,147 @@ describe("retained state", () => {
 
     await new Promise((r) => setTimeout(r, 50));
     expect(gotState).toBe(false);
+  });
+});
+
+describe("close_room", () => {
+  const HTTP_URL = `http://localhost:${server.port}`;
+
+  test("host closes the room: everyone gets 4001 and the room is deleted", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const hostClose = new Promise<CloseEvent>((r) => { ws1.onclose = r; });
+    const guestClose = new Promise<CloseEvent>((r) => { ws2.onclose = r; });
+
+    sendMsg(ws1, { type: "close_room" });
+
+    const [hostEvt, guestEvt] = await Promise.all([hostClose, guestClose]);
+    // The sender gets the same close frame as everyone else — that's the ack.
+    expect(hostEvt.code).toBe(4001);
+    expect(guestEvt.code).toBe(4001);
+    expect(guestEvt.reason).toBe("room closed");
+    expect(rooms.has(room)).toBe(false);
+  });
+
+  test("GET /room/:code returns 404 after close (rejoin links die)", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    expect((await fetch(`${HTTP_URL}/room/${room}`)).status).toBe(200);
+
+    const closed = new Promise<CloseEvent>((r) => { ws1.onclose = r; });
+    sendMsg(ws1, { type: "close_room" });
+    await closed;
+
+    expect((await fetch(`${HTTP_URL}/room/${room}`)).status).toBe(404);
+  });
+
+  test("non-host cannot close the room", async () => {
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    sendMsg(ws2, { type: "close_room" });
+    const err = await waitForType(ws2, "error");
+
+    expect(err.message).toBe("Only the host can close the room");
+    expect(rooms.has(room)).toBe(true);
+    expect(rooms.get(room)?.active).toBe(2);
+  });
+
+  test("rejects close_room when not in a room", async () => {
+    const ws = track(await connect());
+    sendMsg(ws, { type: "close_room" });
+    const err = await waitForType(ws, "error");
+
+    expect(err.message).toContain("Not in a room");
+  });
+});
+
+describe("host disconnect grace", () => {
+  afterEach(() => _setHostGraceForTest());
+
+  test("hostless room is torn down after the grace window", async () => {
+    _setHostGraceForTest(100);
+
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const guestClose = new Promise<CloseEvent>((r) => { ws2.onclose = r; });
+    const peerLeft = waitForType(ws2, "peer_left");
+    ws1.close();
+    await peerLeft;
+
+    // Inside the window the room is still live and joinable.
+    expect(rooms.has(room)).toBe(true);
+
+    const evt = await guestClose;
+    expect(evt.code).toBe(4001);
+    expect(evt.reason).toBe("room closed");
+    expect(rooms.has(room)).toBe(false);
+  });
+
+  test("host reclaim within the window cancels the teardown", async () => {
+    _setHostGraceForTest(100);
+
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const peerLeft = waitForType(ws2, "peer_left");
+    ws1.close();
+    await peerLeft;
+
+    const ws3 = track(await connect());
+    sendMsg(ws3, { type: "join", clientId: "host", room });
+    const rejoined = await waitForType(ws3, "joined");
+    expect(rejoined.index).toBe(0);
+
+    // Outlive the (cancelled) window; the room must survive.
+    await new Promise((r) => setTimeout(r, 250));
+    expect(rooms.has(room)).toBe(true);
+    expect(rooms.get(room)?.active).toBe(2);
+    expect(ws2.readyState).toBe(WebSocket.OPEN);
+  });
+
+  test("guest disconnect does not arm the teardown", async () => {
+    _setHostGraceForTest(100);
+
+    const ws1 = track(await connect());
+    sendMsg(ws1, { type: "create", clientId: "host", maxClients: 2 });
+    const { room } = await waitForType(ws1, "created");
+
+    const ws2 = track(await connect());
+    sendMsg(ws2, { type: "join", clientId: "guest", room });
+    await waitForType(ws2, "joined");
+
+    const peerLeft = waitForType(ws1, "peer_left");
+    ws2.close();
+    await peerLeft;
+
+    await new Promise((r) => setTimeout(r, 250));
+    expect(rooms.has(room)).toBe(true);
+    expect(ws1.readyState).toBe(WebSocket.OPEN);
   });
 });
 

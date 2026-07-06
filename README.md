@@ -95,9 +95,20 @@ On a successful (re)join the server replays the host's latest retained snapshot 
 ```js
 ws.onclose = (event) => {
   if (event.code === 4000) return; // replaced by a newer connection; don't reconnect
+  if (event.code === 4001) return; // room closed; don't reconnect
   // ...your reconnect logic
 };
 ```
+
+### Room lifetime
+
+A room ends in one of three ways, and in every case `GET /room/:code` starts returning **404** immediately, so stale join links stop resolving:
+
+- **The host closes it.** The host sends `close_room`; every member (the host included) receives WebSocket close `4001` / `"room closed"`.
+- **The host stays gone.** If the host's socket drops and no connection reclaims slot `0` within **2 minutes**, the room is torn down and remaining members get the same `4001` close. Within the window the room stays fully live, so a rebooting host device picks up right where it left off.
+- **Everyone leaves.** A room with no connected members is deleted at once.
+
+Treat `4001` as terminal: the room is gone, so surface "game over / room closed" to the player instead of reconnecting.
 
 ### Message flow
 
@@ -134,6 +145,11 @@ sequenceDiagram
     G->>S: { type: "join", clientId: "guest-secret", room: "Mu5h6Z" }
     S->>G: { type: "joined", room: "Mu5h6Z", index: 1, peers: [0] }
     S->>G: { type: "state", data: { round: 3 } }
+
+    Note over H,G: Host ends the session
+    H->>S: { type: "close_room" }
+    S--xG: close 4001 "room closed"
+    S--xH: close 4001 "room closed"
 ```
 
 ## Protocol reference
@@ -148,6 +164,7 @@ All messages are JSON over WebSocket.
 | `join` | `clientId`, `room` | Join an existing room. Reusing your prior `clientId` reclaims your slot. |
 | `send` | `data`, `to?` | Send to all peers or a specific peer (`to` is a numeric index). |
 | `set_state` | `data` | **Host only** (slot `0`). Retain a single state snapshot, replayed to clients on join/reconnect and pushed live to current peers. `data` is required; `null` is retained and replayed as `null` (a cleared-state signal), not removed. Capped at 16 KiB (UTF-8 bytes of the serialized payload). |
+| `close_room` | — | **Host only** (slot `0`). Delete the room and close every member's socket with code `4001` / `"room closed"`. No ack message; the sender's own `4001` close frame is the confirmation. |
 
 ### Server → Client
 
