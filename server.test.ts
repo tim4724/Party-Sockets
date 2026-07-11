@@ -1238,6 +1238,17 @@ describe("peer probe", () => {
     expect(res.headers.get("fly-replay")).toBe("region=iad;timeout=5s;fallback=force_self");
   });
 
+  test("region-replay fallback (fly-replay-src) is served locally, not re-replayed", async () => {
+    // If a region replay fails and force_self hands the request back, the
+    // code still decodes to a foreign region. Re-emitting the replay would
+    // loop until fly-proxy gives up (~45s, then 502). Serve locally instead.
+    const res = await origFetch(`http://localhost:${server.port}/room/${codeForRegion("iad", 1)}`, {
+      headers: { "fly-replay-src": "region=iad;t=1" },
+    });
+    expect(res.status).toBe(404);
+    expect(res.headers.get("fly-replay")).toBeNull();
+  });
+
   test("?instance=<any> emits fly-replay (Fly handles wake / fallback)", async () => {
     // We no longer pre-validate against DNS — DNS only lists running
     // machines, so validation would block wakes for stopped targets.

@@ -817,8 +817,15 @@ const server = Bun.serve({
     if (candidateCode && !requestedInstance && REGION_IDX !== null) {
       // Codes self-route: decode the region from the code's top 5 bits.
       // Skip locally (REGION_IDX null) — no fly-replay outside Fly.
+      // isReplayFallback breaks the replay loop: when a region replay fails
+      // and force_self hands the request back, the code still decodes to a
+      // foreign region, and re-emitting the same replay would bounce until
+      // fly-proxy gives up (~45s, then 502). Serve the 404 locally instead.
+      // The guard sits on the cross-region branch only, so a successfully
+      // replayed request — which also carries fly-replay-src — still gets
+      // the same-region peer probe below.
       const region = tryDecodeRoomCode(candidateCode);
-      if (region && region !== REGION) {
+      if (region && region !== REGION && !isReplayFallback) {
         return flyReplayToRegion(region);
       }
       // Same-region: probe siblings to find which one holds the room.
