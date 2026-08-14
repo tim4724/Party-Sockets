@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - "[0-9]*"
+    branches:
+      - main
 
 jobs:
   build:
@@ -14,6 +16,7 @@ jobs:
 
   deploy-k8s:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: [self-hosted, k8s]
     steps:
       - name: Setup kubectl
@@ -36,6 +39,7 @@ jobs:
 
   deploy-fly:
     needs: build
+    if: startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
@@ -47,3 +51,28 @@ jobs:
         run: |
           REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           flyctl deploy --image "ghcr.io/${REPO_LOWER}:${{ needs.build.outputs.image_tag }}"
+
+  deploy-ws-dev:
+    needs: build
+    if: github.ref == 'refs/heads/main'
+    runs-on: [self-hosted, k8s]
+    steps:
+      - uses: actions/checkout@v6
+      - name: Setup kubectl
+        uses: azure/setup-kubectl@v5
+        with:
+          version: v1.30.0
+
+      - name: Deploy preview to Kubernetes
+        env:
+          KUBECONFIG_B64: ${{ secrets.KUBECONFIG_B64 }}
+        run: |
+          trap 'rm -f kubeconfig' EXIT
+          echo "${KUBECONFIG_B64}" | base64 -d > kubeconfig
+          export KUBECONFIG=$PWD/kubeconfig
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
+          IMAGE="ghcr.io/${REPO_LOWER}:${{ needs.build.outputs.image_tag }}"
+          echo "Deploying ${IMAGE}"
+          kubectl apply -f k8s/ws-dev.yaml
+          kubectl set image deployment/party-sockets-dev party-sockets-dev="${IMAGE}" -n default
+          kubectl rollout status deployment/party-sockets-dev -n default --timeout=5400s

@@ -1,0 +1,110 @@
+# Preview deployment tracking the latest `main` build.
+# Applied by CI (see .github/workflows/deploy.yml, deploy-ws-dev job) on every push to main;
+# image is updated via `kubectl set image` after this is applied, so the tag below is just
+# the initial placeholder.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: party-sockets-dev
+  namespace: default
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: party-sockets-dev
+  template:
+    metadata:
+      labels:
+        app: party-sockets-dev
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: party-sockets-dev
+          image: ghcr.io/tim4724/party-sockets:placeholder
+          imagePullPolicy: Always
+          env:
+            - name: PORT
+              value: "3000"
+          ports:
+            - containerPort: 3000
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1001
+        runAsGroup: 1001
+        seccompProfile:
+          type: RuntimeDefault
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: party-sockets-dev
+  namespace: default
+spec:
+  selector:
+    app: party-sockets-dev
+  ports:
+    - port: 3000
+      targetPort: 3000
+---
+# This cluster routes everything live via Traefik's IngressRoute CRD (see e.g. the
+# ws-couchpad-https/http IngressRoutes for the prod ws.couchpad.games -> party-sockets
+# service); plain networking.k8s.io/v1 Ingress objects are not actually picked up here.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: ws-dev-couchpad-redirect-to-https
+  namespace: default
+spec:
+  redirectScheme:
+    scheme: https
+    permanent: true
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ws-dev-couchpad-https
+  namespace: default
+spec:
+  entryPoints:
+    - websecure
+  routes:
+    - kind: Rule
+      match: Host(`ws-dev.couchpad.games`)
+      services:
+        - name: party-sockets-dev
+          port: 3000
+  tls:
+    secretName: couchpad-wildcard-tls
+---
+apiVersion: traefik.io/v1alpha1
+kind: IngressRoute
+metadata:
+  name: ws-dev-couchpad-http
+  namespace: default
+spec:
+  entryPoints:
+    - web
+  routes:
+    - kind: Rule
+      match: Host(`ws-dev.couchpad.games`)
+      middlewares:
+        - name: ws-dev-couchpad-redirect-to-https
+      services:
+        - name: party-sockets-dev
+          port: 3000
