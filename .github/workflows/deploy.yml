@@ -51,5 +51,5 @@ jobs:
           IMAGE="ghcr.io/${REPO_LOWER}:${{ needs.build.outputs.image_tag }}"
           echo "Deploying ${IMAGE}"
           kubectl apply -f k8s/ws-dev.yaml
-          kubectl set image deployment/party-sockets-dev party-sockets-dev="${IMAGE}" -n default
-          kubectl rollout status deployment/party-sockets-dev -n default --timeout=5400s
+          kubectl set image deployment/party-sockets-dev party-sockets-dev="${IMAGE}" -n party-sockets-dev
+          kubectl rollout status deployment/party-sockets-dev -n party-sockets-dev --timeout=5400s

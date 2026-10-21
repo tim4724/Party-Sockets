@@ -6,7 +6,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: party-sockets-dev
-  namespace: default
+  namespace: party-sockets-dev
 spec:
   replicas: 1
   selector:
@@ -54,7 +54,7 @@ apiVersion: v1
 kind: Service
 metadata:
   name: party-sockets-dev
-  namespace: default
+  namespace: party-sockets-dev
 spec:
   selector:
     app: party-sockets-dev
@@ -69,7 +69,7 @@ apiVersion: traefik.io/v1alpha1
 kind: Middleware
 metadata:
   name: ws-dev-paperballoon-redirect-to-https
-  namespace: default
+  namespace: party-sockets-dev
 spec:
   redirectScheme:
     scheme: https
@@ -79,7 +79,7 @@ apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: ws-dev-paperballoon-https
-  namespace: default
+  namespace: party-sockets-dev
 spec:
   entryPoints:
     - websecure
@@ -89,14 +89,14 @@ spec:
       services:
         - name: party-sockets-dev
           port: 3000
-  tls:
-    secretName: paperballoon-wildcard-tls
+  # Served from the cluster TLSStore (default/paperballoon-wildcard-tls).
+  tls: {}
 ---
 apiVersion: traefik.io/v1alpha1
 kind: IngressRoute
 metadata:
   name: ws-dev-paperballoon-http
-  namespace: default
+  namespace: party-sockets-dev
 spec:
   entryPoints:
     - web
